@@ -38,7 +38,7 @@ fn create_display(
             .with_hardware_acceleration(hardware_acceleration)
             .with_depth_buffer(native_options.depth_buffer)
             .with_multisampling(native_options.multisampling)
-            .with_srgb(true)
+            .with_srgb(false)
             .with_stencil_buffer(native_options.stencil_buffer)
             .with_vsync(native_options.vsync)
             .build_windowed(window_builder, event_loop)
