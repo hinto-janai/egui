@@ -9,20 +9,24 @@ mod mutex_impl {
     ///
     /// Uses `parking_lot` crate on native targets, and `atomic_refcell` on `wasm32` targets.
     #[derive(Default)]
-    pub struct Mutex<T>(parking_lot::Mutex<T>);
+    pub struct Mutex<T>(std::sync::Mutex<T>);
+//    pub struct Mutex<T>(parking_lot::Mutex<T>);
 
     /// The lock you get from [`Mutex`].
-    pub use parking_lot::MutexGuard;
+//    pub use parking_lot::MutexGuard;
+    pub use std::sync::MutexGuard;
 
     impl<T> Mutex<T> {
         #[inline(always)]
         pub fn new(val: T) -> Self {
-            Self(parking_lot::Mutex::new(val))
+//            Self(parking_lot::Mutex::new(val))
+            Self(std::sync::Mutex::new(val))
         }
 
         #[inline(always)]
         pub fn lock(&self) -> MutexGuard<'_, T> {
-            self.0.lock()
+            self.0.lock().unwrap()
+//            self.0.lock()
         }
     }
 }
@@ -114,31 +118,36 @@ mod mutex_impl {
 #[cfg(not(feature = "deadlock_detection"))]
 mod rw_lock_impl {
     /// The lock you get from [`RwLock::read`].
-    pub use parking_lot::MappedRwLockReadGuard as RwLockReadGuard;
+//    pub use parking_lot::MappedRwLockReadGuard as RwLockReadGuard;
+    pub use std::sync::RwLockReadGuard;
 
     /// The lock you get from [`RwLock::write`].
-    pub use parking_lot::MappedRwLockWriteGuard as RwLockWriteGuard;
+//    pub use parking_lot::MappedRwLockWriteGuard as RwLockWriteGuard;
+    pub use std::sync::RwLockWriteGuard;
 
     /// Provides interior mutability.
     ///
     /// Uses `parking_lot` crate on native targets, and `atomic_refcell` on `wasm32` targets.
     #[derive(Default)]
-    pub struct RwLock<T>(parking_lot::RwLock<T>);
+//    pub struct RwLock<T>(parking_lot::RwLock<T>);
+    pub struct RwLock<T>(std::sync::RwLock<T>);
 
     impl<T> RwLock<T> {
         #[inline(always)]
         pub fn new(val: T) -> Self {
-            Self(parking_lot::RwLock::new(val))
+            Self(std::sync::RwLock::new(val))
+//            Self(parking_lot::RwLock::new(val))
         }
 
         #[inline(always)]
         pub fn read(&self) -> RwLockReadGuard<'_, T> {
-            parking_lot::RwLockReadGuard::map(self.0.read(), |v| v)
+//            parking_lot::RwLockReadGuard::map(self.0.read(), |v| v)
+            self.0.read().unwrap()
         }
 
         #[inline(always)]
         pub fn write(&self) -> RwLockWriteGuard<'_, T> {
-            parking_lot::RwLockWriteGuard::map(self.0.write(), |v| v)
+			self.0.write().unwrap()
         }
     }
 }
