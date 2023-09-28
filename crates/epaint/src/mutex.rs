@@ -1,13 +1,14 @@
-//! Helper module that wraps some Mutex types with different implementations.
+//! Helper module that adds extra checks when the `deadlock_detection` feature is turned on.
 
 // ----------------------------------------------------------------------------
 
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(debug_assertions))]
+#[cfg(not(feature = "deadlock_detection"))]
 mod mutex_impl {
     /// Provides interior mutability.
     ///
-    /// Uses `parking_lot` crate on native targets, and `atomic_refcell` on `wasm32` targets.
+    /// This is a thin wrapper around [`parking_lot::Mutex`], except if
+    /// the feature `deadlock_detection` is turned enabled, in which case
+    /// extra checks are added to detect deadlocks.
     #[derive(Default)]
     pub struct Mutex<T>(std::sync::Mutex<T>);
 //    pub struct Mutex<T>(parking_lot::Mutex<T>);
@@ -31,12 +32,13 @@ mod mutex_impl {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(debug_assertions)]
+#[cfg(feature = "deadlock_detection")]
 mod mutex_impl {
     /// Provides interior mutability.
     ///
-    /// Uses `parking_lot` crate on native targets, and `atomic_refcell` on `wasm32` targets.
+    /// This is a thin wrapper around [`parking_lot::Mutex`], except if
+    /// the feature `deadlock_detection` is turned enabled, in which case
+    /// extra checks are added to detect deadlocks.
     #[derive(Default)]
     pub struct Mutex<T>(parking_lot::Mutex<T>);
 
@@ -86,6 +88,11 @@ mod mutex_impl {
 
             MutexGuard(self.0.lock(), ptr)
         }
+
+        #[inline(always)]
+        pub fn into_inner(self) -> T {
+            self.0.into_inner()
+        }
     }
 
     impl<T> Drop for MutexGuard<'_, T> {
@@ -114,7 +121,8 @@ mod mutex_impl {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+// ----------------------------------------------------------------------------
+
 #[cfg(not(feature = "deadlock_detection"))]
 mod rw_lock_impl {
     /// The lock you get from [`RwLock::read`].
@@ -127,7 +135,9 @@ mod rw_lock_impl {
 
     /// Provides interior mutability.
     ///
-    /// Uses `parking_lot` crate on native targets, and `atomic_refcell` on `wasm32` targets.
+    /// This is a thin wrapper around [`parking_lot::RwLock`], except if
+    /// the feature `deadlock_detection` is turned enabled, in which case
+    /// extra checks are added to detect deadlocks.
     #[derive(Default)]
 //    pub struct RwLock<T>(parking_lot::RwLock<T>);
     pub struct RwLock<T>(std::sync::RwLock<T>);
@@ -152,7 +162,6 @@ mod rw_lock_impl {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "deadlock_detection")]
 mod rw_lock_impl {
     use std::{
@@ -250,7 +259,9 @@ mod rw_lock_impl {
 
     /// Provides interior mutability.
     ///
-    /// Uses `parking_lot` crate on native targets, and `atomic_refcell` on `wasm32` targets.
+    /// This is a thin wrapper around [`parking_lot::RwLock`], except if
+    /// the feature `deadlock_detection` is turned enabled, in which case
+    /// extra checks are added to detect deadlocks.
     #[derive(Default)]
     pub struct RwLock<T> {
         lock: parking_lot::RwLock<T>,
@@ -323,6 +334,11 @@ mod rw_lock_impl {
                 holders: Arc::clone(&self.holders),
             }
         }
+
+        #[inline(always)]
+        pub fn into_inner(self) -> T {
+            self.lock.into_inner()
+        }
     }
 
     fn make_backtrace() -> backtrace::Backtrace {
@@ -332,7 +348,7 @@ mod rw_lock_impl {
     fn format_backtrace(backtrace: &mut backtrace::Backtrace) -> String {
         backtrace.resolve();
 
-        let stacktrace = format!("{:?}", backtrace);
+        let stacktrace = format!("{backtrace:?}");
 
         // Remove irrelevant parts of the stacktrace:
         let end_offset = stacktrace
@@ -345,70 +361,6 @@ mod rw_lock_impl {
             stacktrace[start_offset + first_interesting_function.len()..].to_owned()
         } else {
             stacktrace.to_owned()
-        }
-    }
-}
-
-// ----------------------------------------------------------------------------
-
-#[cfg(target_arch = "wasm32")]
-mod mutex_impl {
-    // `atomic_refcell` will panic if multiple threads try to access the same value
-
-    /// Provides interior mutability.
-    ///
-    /// Uses `parking_lot` crate on native targets, and `atomic_refcell` on `wasm32` targets.
-    #[derive(Default)]
-    pub struct Mutex<T>(atomic_refcell::AtomicRefCell<T>);
-
-    /// The lock you get from [`Mutex`].
-    pub use atomic_refcell::AtomicRefMut as MutexGuard;
-
-    impl<T> Mutex<T> {
-        #[inline(always)]
-        pub fn new(val: T) -> Self {
-            Self(atomic_refcell::AtomicRefCell::new(val))
-        }
-
-        /// Panics if already locked.
-        #[inline(always)]
-        pub fn lock(&self) -> MutexGuard<'_, T> {
-            self.0.borrow_mut()
-        }
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-mod rw_lock_impl {
-    // `atomic_refcell` will panic if multiple threads try to access the same value
-
-    /// The lock you get from [`RwLock::read`].
-    pub use atomic_refcell::AtomicRef as RwLockReadGuard;
-
-    /// The lock you get from [`RwLock::write`].
-    pub use atomic_refcell::AtomicRefMut as RwLockWriteGuard;
-
-    /// Provides interior mutability.
-    ///
-    /// Uses `parking_lot` crate on native targets, and `atomic_refcell` on `wasm32` targets.
-    #[derive(Default)]
-    pub struct RwLock<T>(atomic_refcell::AtomicRefCell<T>);
-
-    impl<T> RwLock<T> {
-        #[inline(always)]
-        pub fn new(val: T) -> Self {
-            Self(atomic_refcell::AtomicRefCell::new(val))
-        }
-
-        #[inline(always)]
-        pub fn read(&self) -> RwLockReadGuard<'_, T> {
-            self.0.borrow()
-        }
-
-        /// Panics if already locked.
-        #[inline(always)]
-        pub fn write(&self) -> RwLockWriteGuard<'_, T> {
-            self.0.borrow_mut()
         }
     }
 }
@@ -431,6 +383,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)] // Ok for tests
+
     use crate::mutex::Mutex;
     use std::time::Duration;
 
@@ -458,7 +412,7 @@ mod tests {
         let other_thread = {
             let one = Arc::clone(&one);
             std::thread::spawn(move || {
-                let _ = one.lock();
+                let _lock = one.lock();
             })
         };
         std::thread::sleep(Duration::from_millis(200));
@@ -471,6 +425,8 @@ mod tests {
 #[cfg(feature = "deadlock_detection")]
 #[cfg(test)]
 mod tests_rwlock {
+    #![allow(clippy::disallowed_methods)] // Ok for tests
+
     use crate::mutex::RwLock;
     use std::time::Duration;
 
