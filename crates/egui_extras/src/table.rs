@@ -57,6 +57,7 @@ pub struct TableBuilder<'a> {
     resizable: bool,
     clip: bool,
     stick_to_bottom: bool,
+    scroll_offset_y: Option<f32>,
     cell_layout: egui::Layout,
 }
 
@@ -71,6 +72,7 @@ impl<'a> TableBuilder<'a> {
             resizable: false,
             clip: true,
             stick_to_bottom: false,
+            scroll_offset_y: None,
             cell_layout,
         }
     }
@@ -115,6 +117,12 @@ impl<'a> TableBuilder<'a> {
         self
     }
 
+    /// Set the vertical scroll offset position.
+    pub fn vertical_scroll_offset(mut self, offset: f32) -> Self {
+        self.scroll_offset_y = Some(offset);
+        self
+    }
+
     /// What layout should we use for the individual cells?
     pub fn cell_layout(mut self, cell_layout: egui::Layout) -> Self {
         self.cell_layout = cell_layout;
@@ -156,6 +164,7 @@ impl<'a> TableBuilder<'a> {
             resizable,
             clip,
             stick_to_bottom,
+            scroll_offset_y,
             cell_layout,
         } = self;
 
@@ -189,6 +198,7 @@ impl<'a> TableBuilder<'a> {
             striped,
             clip,
             stick_to_bottom,
+            scroll_offset_y,
             cell_layout,
         }
     }
@@ -208,6 +218,7 @@ impl<'a> TableBuilder<'a> {
             resizable,
             clip,
             stick_to_bottom,
+            scroll_offset_y,
             cell_layout,
         } = self;
 
@@ -229,6 +240,7 @@ impl<'a> TableBuilder<'a> {
             striped,
             clip,
             stick_to_bottom,
+            scroll_offset_y,
             cell_layout,
         }
         .body(body);
@@ -268,6 +280,7 @@ pub struct Table<'a> {
     striped: bool,
     clip: bool,
     stick_to_bottom: bool,
+    scroll_offset_y: Option<f32>,
     cell_layout: egui::Layout,
 }
 
@@ -288,6 +301,7 @@ impl<'a> Table<'a> {
             striped,
             clip,
             stick_to_bottom,
+            scroll_offset_y,
             cell_layout,
         } = self;
 
@@ -295,9 +309,13 @@ impl<'a> Table<'a> {
 
         let mut new_widths = widths.clone();
 
-        let scroll_area = egui::ScrollArea::new([false, scroll])
+        let mut scroll_area = egui::ScrollArea::new([false, scroll])
             .auto_shrink([true; 2])
             .stick_to_bottom(stick_to_bottom);
+
+        if let Some(scroll_offset_y) = scroll_offset_y {
+            scroll_area = scroll_area.vertical_scroll_offset(scroll_offset_y);
+        }
 
         scroll_area.show(ui, move |ui| {
             let layout = StripLayout::new(ui, CellDirection::Horizontal, clip, cell_layout);
@@ -339,10 +357,11 @@ impl<'a> Table<'a> {
                     .expand(ui.style().interaction.resize_grab_radius_side);
                 let mouse_over_resize_line = ui.rect_contains_pointer(line_rect);
 
-                if ui.input().pointer.any_pressed()
-                    && ui.input().pointer.any_down()
-                    && mouse_over_resize_line
-                {
+                let any_pressed_and_down = {
+                    let pointer = &ui.input().pointer;
+                    pointer.any_pressed() && pointer.any_down()
+                };
+                if any_pressed_and_down && mouse_over_resize_line {
                     ui.memory().set_dragged_id(resize_id);
                 }
                 let is_resizing = ui.memory().is_being_dragged(resize_id);
@@ -359,8 +378,10 @@ impl<'a> Table<'a> {
                     }
                 }
 
-                let dragging_something_else =
-                    ui.input().pointer.any_down() || ui.input().pointer.any_pressed();
+                let dragging_something_else = {
+                    let pointer = &ui.input().pointer;
+                    pointer.any_down() || pointer.any_pressed()
+                };
                 let resize_hover = mouse_over_resize_line && !dragging_something_else;
 
                 if resize_hover || is_resizing {

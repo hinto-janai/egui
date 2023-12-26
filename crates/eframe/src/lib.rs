@@ -48,9 +48,9 @@
 //! /// Call this once from the HTML.
 //! #[cfg(target_arch = "wasm32")]
 //! #[wasm_bindgen]
-//! pub fn start(canvas_id: &str) -> Result<AppRunnerRef, eframe::wasm_bindgen::JsValue> {
+//! pub async fn start(canvas_id: &str) -> Result<AppRunnerRef, eframe::wasm_bindgen::JsValue> {
 //!     let web_options = eframe::WebOptions::default();
-//!     eframe::start_web(canvas_id, web_options, Box::new(|cc| Box::new(MyEguiApp::new(cc))))
+//!     eframe::start_web(canvas_id, web_options, Box::new(|cc| Box::new(MyEguiApp::new(cc)))).await
 //! }
 //! ```
 //!
@@ -103,18 +103,21 @@ pub use web_sys;
 /// /// You can add more callbacks like this if you want to call in to your code.
 /// #[cfg(target_arch = "wasm32")]
 /// #[wasm_bindgen]
-/// pub fn start(canvas_id: &str) -> Result<AppRunnerRef>, eframe::wasm_bindgen::JsValue> {
+/// pub async fn start(canvas_id: &str) -> Result<AppRunnerRef>, eframe::wasm_bindgen::JsValue> {
 ///     let web_options = eframe::WebOptions::default();
-///     eframe::start_web(canvas_id, web_options, Box::new(|cc| Box::new(MyEguiApp::new(cc))))
+///     eframe::start_web(canvas_id, web_options, Box::new(|cc| Box::new(MyEguiApp::new(cc)))).await
 /// }
 /// ```
+///
+/// # Errors
+/// Failing to initialize WebGL graphics.
 #[cfg(target_arch = "wasm32")]
-pub fn start_web(
+pub async fn start_web(
     canvas_id: &str,
     web_options: WebOptions,
     app_creator: AppCreator,
 ) -> Result<AppRunnerRef, wasm_bindgen::JsValue> {
-    let handle = web::start(canvas_id, web_options, app_creator)?;
+    let handle = web::start(canvas_id, web_options, app_creator).await?;
 
     Ok(handle)
 }
@@ -169,13 +172,13 @@ pub fn run_native(app_name: &str, native_options: NativeOptions, app_creator: Ap
         #[cfg(feature = "glow")]
         Renderer::Glow => {
             tracing::debug!("Using the glow renderer");
-            native::run::run_glow(app_name, &native_options, app_creator);
+            native::run::run_glow(app_name, native_options, app_creator);
         }
 
         #[cfg(feature = "wgpu")]
         Renderer::Wgpu => {
             tracing::debug!("Using the wgpu renderer");
-            native::run::run_wgpu(app_name, &native_options, app_creator);
+            native::run::run_wgpu(app_name, native_options, app_creator);
         }
     }
 }

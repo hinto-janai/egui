@@ -78,14 +78,14 @@ impl<'open> Window<'open> {
     }
 
     /// Usage: `Window::new(…).mutate(|w| w.resize = w.resize.auto_expand_width(true))`
-    /// Not sure this is a good interface for this.
+    // TODO(emilk): I'm not sure this is a good interface for this.
     pub fn mutate(mut self, mutate: impl Fn(&mut Self)) -> Self {
         mutate(&mut self);
         self
     }
 
     /// Usage: `Window::new(…).resize(|r| r.auto_expand_width(true))`
-    /// Not sure this is a good interface for this.
+    // TODO(emilk): I'm not sure this is a good interface for this.
     pub fn resize(mut self, mutate: impl Fn(Resize) -> Resize) -> Self {
         self.resize = mutate(self.resize);
         self
@@ -584,7 +584,8 @@ fn window_interaction(
     if window_interaction.is_none() {
         if let Some(hover_window_interaction) = resize_hover(ctx, possible, area_layer_id, rect) {
             hover_window_interaction.set_cursor(ctx);
-            if ctx.input().pointer.any_pressed() && ctx.input().pointer.primary_down() {
+            let any_pressed = ctx.input().pointer.any_pressed(); // avoid deadlocks
+            if any_pressed && ctx.input().pointer.primary_down() {
                 ctx.memory().interaction.drag_id = Some(id);
                 ctx.memory().interaction.drag_is_window = true;
                 window_interaction = Some(hover_window_interaction);
@@ -612,7 +613,8 @@ fn resize_hover(
 ) -> Option<WindowInteraction> {
     let pointer = ctx.input().pointer.interact_pos()?;
 
-    if ctx.input().pointer.any_down() && !ctx.input().pointer.any_pressed() {
+    let any_down = ctx.input().pointer.any_down(); // avoid deadlocks
+    if any_down && !ctx.input().pointer.any_pressed() {
         return None; // already dragging (something)
     }
 

@@ -7,6 +7,7 @@ use crate::*;
 // ----------------------------------------------------------------------------
 
 type NumFormatter<'a> = Box<dyn 'a + Fn(f64, RangeInclusive<usize>) -> String>;
+type NumParser<'a> = Box<dyn 'a + Fn(&str) -> Option<f64>>;
 
 // ----------------------------------------------------------------------------
 
@@ -75,13 +76,13 @@ pub struct Slider<'a> {
     orientation: SliderOrientation,
     prefix: String,
     suffix: String,
-    text: String,
-    text_color: Option<Color32>,
+    text: WidgetText,
     /// Sets the minimal step of the widget value
     step: Option<f64>,
     min_decimals: usize,
     max_decimals: Option<usize>,
     custom_formatter: Option<NumFormatter<'a>>,
+    custom_parser: Option<NumParser<'a>>,
 }
 
 impl<'a> Slider<'a> {
@@ -121,11 +122,11 @@ impl<'a> Slider<'a> {
             prefix: Default::default(),
             suffix: Default::default(),
             text: Default::default(),
-            text_color: None,
             step: None,
             min_decimals: 0,
             max_decimals: None,
             custom_formatter: None,
+            custom_parser: None,
         }
     }
 
@@ -149,13 +150,13 @@ impl<'a> Slider<'a> {
     }
 
     /// Show a text next to the slider (e.g. explaining what the slider controls).
-    pub fn text(mut self, text: impl ToString) -> Self {
-        self.text = text.to_string();
+    pub fn text(mut self, text: impl Into<WidgetText>) -> Self {
+        self.text = text.into();
         self
     }
 
     pub fn text_color(mut self, text_color: Color32) -> Self {
-        self.text_color = Some(text_color);
+        self.text = self.text.color(text_color);
         self
     }
 
@@ -254,10 +255,34 @@ impl<'a> Slider<'a> {
     /// A custom formatter takes a `f64` for the numeric value and a `RangeInclusive<usize>` representing
     /// the decimal range i.e. minimum and maximum number of decimal places shown.
     ///
+    /// See also: [`DragValue::custom_parser`]
+    ///
     /// ```
     /// # egui::__run_test_ui(|ui| {
-    /// # let mut my_i64: i64 = 0;
-    /// ui.add(egui::Slider::new(&mut my_i64, 0..=100).custom_formatter(|n, _| format!("{:X}", n as i64)));
+    /// # let mut my_i32: i32 = 0;
+    /// ui.add(egui::Slider::new(&mut my_i32, 0..=((60 * 60 * 24) - 1))
+    ///     .custom_formatter(|n, _| {
+    ///         let n = n as i32;
+    ///         let hours = n / (60 * 60);
+    ///         let mins = (n / 60) % 60;
+    ///         let secs = n % 60;
+    ///         format!("{hours:02}:{mins:02}:{secs:02}")
+    ///     })
+    ///     .custom_parser(|s| {
+    ///         let parts: Vec<&str> = s.split(':').collect();
+    ///         if parts.len() == 3 {
+    ///             parts[0].parse::<i32>().and_then(|h| {
+    ///                 parts[1].parse::<i32>().and_then(|m| {
+    ///                     parts[2].parse::<i32>().map(|s| {
+    ///                         ((h * 60 * 60) + (m * 60) + s) as f64
+    ///                     })
+    ///                 })
+    ///             })
+    ///             .ok()
+    ///         } else {
+    ///             None
+    ///         }
+    ///     }));
     /// # });
     /// ```
     pub fn custom_formatter(
@@ -266,6 +291,159 @@ impl<'a> Slider<'a> {
     ) -> Self {
         self.custom_formatter = Some(Box::new(formatter));
         self
+    }
+
+    /// Set custom parser defining how the text input is parsed into a number.
+    ///
+    /// A custom parser takes an `&str` to parse into a number and returns `Some` if it was successfully parsed
+    /// or `None` otherwise.
+    ///
+    /// See also: [`DragValue::custom_formatter`]
+    ///
+    /// ```
+    /// # egui::__run_test_ui(|ui| {
+    /// # let mut my_i32: i32 = 0;
+    /// ui.add(egui::Slider::new(&mut my_i32, 0..=((60 * 60 * 24) - 1))
+    ///     .custom_formatter(|n, _| {
+    ///         let n = n as i32;
+    ///         let hours = n / (60 * 60);
+    ///         let mins = (n / 60) % 60;
+    ///         let secs = n % 60;
+    ///         format!("{hours:02}:{mins:02}:{secs:02}")
+    ///     })
+    ///     .custom_parser(|s| {
+    ///         let parts: Vec<&str> = s.split(':').collect();
+    ///         if parts.len() == 3 {
+    ///             parts[0].parse::<i32>().and_then(|h| {
+    ///                 parts[1].parse::<i32>().and_then(|m| {
+    ///                     parts[2].parse::<i32>().map(|s| {
+    ///                         ((h * 60 * 60) + (m * 60) + s) as f64
+    ///                     })
+    ///                 })
+    ///             })
+    ///             .ok()
+    ///         } else {
+    ///             None
+    ///         }
+    ///     }));
+    /// # });
+    /// ```
+    pub fn custom_parser(mut self, parser: impl 'a + Fn(&str) -> Option<f64>) -> Self {
+        self.custom_parser = Some(Box::new(parser));
+        self
+    }
+
+    /// Set `custom_formatter` and `custom_parser` to display and parse numbers as binary integers. Floating point
+    /// numbers are *not* supported.
+    ///
+    /// `min_width` specifies the minimum number of displayed digits; if the number is shorter than this, it will be
+    /// prefixed with additional 0s to match `min_width`.
+    ///
+    /// If `twos_complement` is true, negative values will be displayed as the 2's complement representation. Otherwise
+    /// they will be prefixed with a '-' sign.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `min_width` is 0.
+    ///
+    /// ```
+    /// # egui::__run_test_ui(|ui| {
+    /// # let mut my_i32: i32 = 0;
+    /// ui.add(egui::Slider::new(&mut my_i32, -100..=100).binary(64, false));
+    /// # });
+    /// ```
+    pub fn binary(self, min_width: usize, twos_complement: bool) -> Self {
+        assert!(
+            min_width > 0,
+            "Slider::binary: `min_width` must be greater than 0"
+        );
+        if twos_complement {
+            self.custom_formatter(move |n, _| format!("{:0>min_width$b}", n as i64))
+        } else {
+            self.custom_formatter(move |n, _| {
+                let sign = if n < 0.0 { "-" } else { "" };
+                format!("{sign}{:0>min_width$b}", n.abs() as i64)
+            })
+        }
+        .custom_parser(|s| i64::from_str_radix(s, 2).map(|n| n as f64).ok())
+    }
+
+    /// Set `custom_formatter` and `custom_parser` to display and parse numbers as octal integers. Floating point
+    /// numbers are *not* supported.
+    ///
+    /// `min_width` specifies the minimum number of displayed digits; if the number is shorter than this, it will be
+    /// prefixed with additional 0s to match `min_width`.
+    ///
+    /// If `twos_complement` is true, negative values will be displayed as the 2's complement representation. Otherwise
+    /// they will be prefixed with a '-' sign.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `min_width` is 0.
+    ///
+    /// ```
+    /// # egui::__run_test_ui(|ui| {
+    /// # let mut my_i32: i32 = 0;
+    /// ui.add(egui::Slider::new(&mut my_i32, -100..=100).octal(22, false));
+    /// # });
+    /// ```
+    pub fn octal(self, min_width: usize, twos_complement: bool) -> Self {
+        assert!(
+            min_width > 0,
+            "Slider::octal: `min_width` must be greater than 0"
+        );
+        if twos_complement {
+            self.custom_formatter(move |n, _| format!("{:0>min_width$o}", n as i64))
+        } else {
+            self.custom_formatter(move |n, _| {
+                let sign = if n < 0.0 { "-" } else { "" };
+                format!("{sign}{:0>min_width$o}", n.abs() as i64)
+            })
+        }
+        .custom_parser(|s| i64::from_str_radix(s, 8).map(|n| n as f64).ok())
+    }
+
+    /// Set `custom_formatter` and `custom_parser` to display and parse numbers as hexadecimal integers. Floating point
+    /// numbers are *not* supported.
+    ///
+    /// `min_width` specifies the minimum number of displayed digits; if the number is shorter than this, it will be
+    /// prefixed with additional 0s to match `min_width`.
+    ///
+    /// If `twos_complement` is true, negative values will be displayed as the 2's complement representation. Otherwise
+    /// they will be prefixed with a '-' sign.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `min_width` is 0.
+    ///
+    /// ```
+    /// # egui::__run_test_ui(|ui| {
+    /// # let mut my_i32: i32 = 0;
+    /// ui.add(egui::Slider::new(&mut my_i32, -100..=100).hexadecimal(16, false, true));
+    /// # });
+    /// ```
+    pub fn hexadecimal(self, min_width: usize, twos_complement: bool, upper: bool) -> Self {
+        assert!(
+            min_width > 0,
+            "Slider::hexadecimal: `min_width` must be greater than 0"
+        );
+        match (twos_complement, upper) {
+            (true, true) => {
+                self.custom_formatter(move |n, _| format!("{:0>min_width$X}", n as i64))
+            }
+            (true, false) => {
+                self.custom_formatter(move |n, _| format!("{:0>min_width$x}", n as i64))
+            }
+            (false, true) => self.custom_formatter(move |n, _| {
+                let sign = if n < 0.0 { "-" } else { "" };
+                format!("{sign}{:0>min_width$X}", n.abs() as i64)
+            }),
+            (false, false) => self.custom_formatter(move |n, _| {
+                let sign = if n < 0.0 { "-" } else { "" };
+                format!("{sign}{:0>min_width$x}", n.abs() as i64)
+            }),
+        }
+        .custom_parser(|s| i64::from_str_radix(s, 16).map(|n| n as f64).ok())
     }
 
     /// Helper: equivalent to `self.precision(0).smallest_positive(1.0)`.
@@ -493,17 +671,20 @@ impl<'a> Slider<'a> {
         };
         let mut value = self.get_value();
         let response = ui.add({
-            let dv = DragValue::new(&mut value)
+            let mut dv = DragValue::new(&mut value)
                 .speed(speed)
                 .clamp_range(self.clamp_range())
                 .min_decimals(self.min_decimals)
                 .max_decimals_opt(self.max_decimals)
                 .suffix(self.suffix.clone())
                 .prefix(self.prefix.clone());
-            match &self.custom_formatter {
-                Some(fmt) => dv.custom_formatter(fmt),
-                None => dv,
+            if let Some(fmt) = &self.custom_formatter {
+                dv = dv.custom_formatter(fmt);
+            };
+            if let Some(parser) = &self.custom_parser {
+                dv = dv.custom_parser(parser);
             }
+            dv
         });
         if value != self.get_value() {
             self.set_value(value);
@@ -547,9 +728,7 @@ impl<'a> Slider<'a> {
         }
 
         if !self.text.is_empty() {
-            let text_color = self.text_color.unwrap_or_else(|| ui.visuals().text_color());
-            let text = RichText::new(&self.text).color(text_color);
-            ui.add(Label::new(text).wrap(false));
+            ui.add(Label::new(self.text.clone()).wrap(false));
         }
 
         response
@@ -568,7 +747,7 @@ impl<'a> Widget for Slider<'a> {
         let mut response = inner_response.inner | inner_response.response;
         let value = self.get_value();
         response.changed = value != old_value;
-        response.widget_info(|| WidgetInfo::slider(value, &self.text));
+        response.widget_info(|| WidgetInfo::slider(value, self.text.text()));
         response
     }
 }

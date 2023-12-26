@@ -10,7 +10,7 @@ fn main() {
     let (gl_window, gl) = create_display(&event_loop);
     let gl = std::sync::Arc::new(gl);
 
-    let mut egui_glow = egui_glow::EguiGlow::new(&event_loop, gl.clone());
+    let mut egui_glow = egui_glow::EguiGlow::new(&event_loop, gl.clone(), None);
 
     event_loop.run(move |event, _, control_flow| {
         let mut redraw = || {
@@ -79,9 +79,11 @@ fn main() {
                     gl_window.resize(**new_inner_size);
                 }
 
-                egui_glow.on_event(&event);
+                let event_response = egui_glow.on_event(&event);
 
-                gl_window.window().request_redraw(); // TODO(emilk): ask egui if the events warrants a repaint instead
+                if event_response.repaint {
+                    gl_window.window().request_redraw();
+                }
             }
             glutin::event::Event::LoopDestroyed => {
                 egui_glow.destroy();
@@ -114,7 +116,6 @@ fn create_display(
     let gl_window = unsafe {
         glutin::ContextBuilder::new()
             .with_depth_buffer(0)
-            .with_srgb(true)
             .with_stencil_buffer(0)
             .with_vsync(true)
             .build_windowed(window_builder, event_loop)

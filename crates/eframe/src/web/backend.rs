@@ -1,5 +1,4 @@
-use super::{glow_wrapping::WrappedGlowPainter, *};
-
+use super::{web_painter::WebPainter, *};
 use crate::epi;
 
 use egui::{
@@ -88,6 +87,10 @@ impl IsDestroyed {
 
 // ----------------------------------------------------------------------------
 
+fn user_agent() -> Option<String> {
+    web_sys::window()?.navigator().user_agent().ok()
+}
+
 fn web_location() -> epi::Location {
     let location = web_sys::window().unwrap().location();
 
@@ -102,7 +105,7 @@ fn web_location() -> epi::Location {
 
     let query_map = parse_query_map(&query)
         .iter()
-        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
         .collect();
 
     epi::Location {
@@ -162,7 +165,7 @@ fn test_parse_query() {
 pub struct AppRunner {
     pub(crate) frame: epi::Frame,
     egui_ctx: egui::Context,
-    painter: WrappedGlowPainter,
+    painter: ActiveWebPainter,
     pub(crate) input: WebInput,
     app: Box<dyn epi::App>,
     pub(crate) needs_repaint: std::sync::Arc<NeedRepaint>,
@@ -182,13 +185,14 @@ impl Drop for AppRunner {
 }
 
 impl AppRunner {
-    pub fn new(
+    /// # Errors
+    /// Failure to initialize WebGL renderer.
+    pub async fn new(
         canvas_id: &str,
         web_options: crate::WebOptions,
         app_creator: epi::AppCreator,
-    ) -> Result<Self, JsValue> {
-        let painter = WrappedGlowPainter::new(canvas_id, web_options.webgl_context_option)
-            .map_err(JsValue::from)?; // fail early
+    ) -> Result<Self, String> {
+        let painter = ActiveWebPainter::new(canvas_id, &web_options).await?;
 
         let system_theme = if web_options.follow_system_theme {
             super::system_theme()
@@ -198,6 +202,7 @@ impl AppRunner {
 
         let info = epi::IntegrationInfo {
             web_info: epi::WebInfo {
+                user_agent: user_agent().unwrap_or_default(),
                 location: web_location(),
             },
             system_theme,
@@ -207,6 +212,9 @@ impl AppRunner {
         let storage = LocalStorage::default();
 
         let egui_ctx = egui::Context::default();
+        egui_ctx.set_os(egui::os::OperatingSystem::from_user_agent(
+            &user_agent().unwrap_or_default(),
+        ));
         load_memory(&egui_ctx);
 
         let theme = system_theme.unwrap_or(web_options.default_theme);
@@ -216,9 +224,13 @@ impl AppRunner {
             egui_ctx: egui_ctx.clone(),
             integration_info: info.clone(),
             storage: Some(&storage),
+
             #[cfg(feature = "glow")]
-            gl: Some(painter.painter.gl().clone()),
-            #[cfg(feature = "wgpu")]
+            gl: Some(painter.gl().clone()),
+
+            #[cfg(all(feature = "wgpu", not(feature = "glow")))]
+            wgpu_render_state: painter.render_state(),
+            #[cfg(all(feature = "wgpu", feature = "glow"))]
             wgpu_render_state: None,
         });
 
@@ -226,9 +238,13 @@ impl AppRunner {
             info,
             output: Default::default(),
             storage: Some(Box::new(storage)),
+
             #[cfg(feature = "glow")]
             gl: Some(painter.gl().clone()),
-            #[cfg(feature = "wgpu")]
+
+            #[cfg(all(feature = "wgpu", not(feature = "glow")))]
+            wgpu_render_state: painter.render_state(),
+            #[cfg(all(feature = "wgpu", feature = "glow"))]
             wgpu_render_state: None,
         };
 
@@ -263,6 +279,17 @@ impl AppRunner {
 
     pub fn egui_ctx(&self) -> &egui::Context {
         &self.egui_ctx
+    }
+
+    /// Get mutable access to the concrete [`App`] we enclose.
+    ///
+    /// This will panic if your app does not implement [`App::as_any_mut`].
+    pub fn app_mut<ConreteApp: 'static + crate::App>(&mut self) -> &mut ConreteApp {
+        self.app
+            .as_any_mut()
+            .expect("Your app must implement `as_any_mut`, but it doesn't")
+            .downcast_mut::<ConreteApp>()
+            .unwrap()
     }
 
     pub fn auto_save(&mut self) {
@@ -346,16 +373,12 @@ impl AppRunner {
         Ok((repaint_after, clipped_primitives))
     }
 
-    pub fn clear_color_buffer(&self) {
-        self.painter
-            .clear(self.app.clear_color(&self.egui_ctx.style().visuals));
-    }
-
     /// Paint the results of the last call to [`Self::logic`].
     pub fn paint(&mut self, clipped_primitives: &[egui::ClippedPrimitive]) -> Result<(), JsValue> {
         let textures_delta = std::mem::take(&mut self.textures_delta);
 
         self.painter.paint_and_update_textures(
+            self.app.clear_color(&self.egui_ctx.style().visuals),
             clipped_primitives,
             self.egui_ctx.pixels_per_point(),
             &textures_delta,
@@ -454,9 +477,6 @@ pub struct AppRunnerContainer {
 impl AppRunnerContainer {
     /// Convenience function to reduce boilerplate and ensure that all event handlers
     /// are dealt with in the same way
-    ///
-
-    #[must_use]
     pub fn add_event_listener<E: wasm_bindgen::JsCast>(
         &mut self,
         target: &EventTarget,
@@ -487,7 +507,7 @@ impl AppRunnerContainer {
 
         let handle = TargetEvent {
             target: target.clone(),
-            event_name: event_name.to_string(),
+            event_name: event_name.to_owned(),
             closure,
         };
 
@@ -501,12 +521,12 @@ impl AppRunnerContainer {
 
 /// Install event listeners to register different input events
 /// and start running the given app.
-pub fn start(
+pub async fn start(
     canvas_id: &str,
     web_options: crate::WebOptions,
     app_creator: epi::AppCreator,
 ) -> Result<AppRunnerRef, JsValue> {
-    let mut runner = AppRunner::new(canvas_id, web_options, app_creator)?;
+    let mut runner = AppRunner::new(canvas_id, web_options, app_creator).await?;
     runner.warm_up()?;
     start_runner(runner)
 }

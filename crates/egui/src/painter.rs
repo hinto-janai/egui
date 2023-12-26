@@ -213,7 +213,7 @@ impl Painter {
             rect.min,
             Align2::LEFT_TOP,
             text.to_string(),
-            FontId::monospace(14.0),
+            FontId::monospace(12.0),
             color,
         );
     }
@@ -232,7 +232,7 @@ impl Painter {
         color: Color32,
         text: impl ToString,
     ) -> Rect {
-        let galley = self.layout_no_wrap(text.to_string(), FontId::monospace(14.0), color);
+        let galley = self.layout_no_wrap(text.to_string(), FontId::monospace(12.0), color);
         let rect = anchor.anchor_rect(Rect::from_min_size(pos, galley.size()));
         let frame_rect = rect.expand(2.0);
         self.add(Shape::rect_filled(
@@ -351,6 +351,16 @@ impl Painter {
         self.line_segment([origin, tip], stroke);
         self.line_segment([tip, tip - tip_length * (rot * dir)], stroke);
         self.line_segment([tip, tip - tip_length * (rot.inverse() * dir)], stroke);
+    }
+
+    /// An image at the given position.
+    ///
+    /// `uv` should normally be `Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))`
+    /// unless you want to crop or flip the image.
+    ///
+    /// `tint` is a color multiplier. Use [`Color32::WHITE`] if you don't want to tint the image.
+    pub fn image(&self, texture_id: epaint::TextureId, rect: Rect, uv: Rect, tint: Color32) {
+        self.add(Shape::image(texture_id, rect, uv, tint));
     }
 }
 

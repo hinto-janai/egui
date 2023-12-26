@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use crate::{
     animation_manager::AnimationManager, data::output::PlatformOutput, frame_state::FrameState,
-    input_state::*, layers::GraphicLayers, memory::Options, output::FullOutput, TextureHandle, *,
+    input_state::*, layers::GraphicLayers, memory::Options, os::OperatingSystem,
+    output::FullOutput, TextureHandle, *,
 };
 use epaint::{mutex::*, stats::*, text::Fonts, textures::TextureFilter, TessellationOptions, *};
 
@@ -36,6 +37,8 @@ struct ContextImpl {
     animation_manager: AnimationManager,
     tex_manager: WrappedTextureManager,
 
+    os: OperatingSystem,
+
     input: InputState,
 
     /// State that is collected during a frame and then cleared
@@ -46,17 +49,25 @@ struct ContextImpl {
     output: PlatformOutput,
 
     paint_stats: PaintStats,
+
     /// the duration backend will poll for new events, before forcing another egui update
     /// even if there's no new events.
     repaint_after: std::time::Duration,
+
     /// While positive, keep requesting repaints. Decrement at the end of each frame.
     repaint_requests: u32,
     request_repaint_callback: Option<Box<dyn Fn() + Send + Sync>>,
+
+    /// used to suppress multiple calls to [`Self::request_repaint_callback`] during the same frame.
+    has_requested_repaint_this_frame: bool,
+
     requested_repaint_last_frame: bool,
 }
 
 impl ContextImpl {
     fn begin_frame_mut(&mut self, new_raw_input: RawInput) {
+        self.has_requested_repaint_this_frame = false; // allow new calls during the frame
+
         self.memory.begin_frame(&self.input, &new_raw_input);
 
         self.input = std::mem::take(&mut self.input)
@@ -555,6 +566,59 @@ impl Context {
     pub fn tessellation_options(&self) -> RwLockWriteGuard<'_, TessellationOptions> {
         RwLockWriteGuard::map(self.write(), |c| &mut c.memory.options.tessellation_options)
     }
+
+    /// What operating system are we running on?
+    ///
+    /// When compiling natively, this is
+    /// figured out from the `target_os`.
+    ///
+    /// For web, this can be figured out from the user-agent,
+    /// and is done so by [`eframe`](https://github.com/emilk/egui/tree/master/crates/eframe).
+    pub fn os(&self) -> OperatingSystem {
+        self.read().os
+    }
+
+    /// Set the operating system we are running on.
+    ///
+    /// If you are writing wasm-based integration for egui you
+    /// may want to set this based on e.g. the user-agent.
+    pub fn set_os(&self, os: OperatingSystem) {
+        self.write().os = os;
+    }
+
+    /// Format the given shortcut in a human-readable way (e.g. `Ctrl+Shift+X`).
+    ///
+    /// Can be used to get the text for [`Button::shortcut_text`].
+    pub fn format_shortcut(&self, shortcut: &KeyboardShortcut) -> String {
+        let os = self.os();
+
+        let is_mac = matches!(os, OperatingSystem::Mac | OperatingSystem::IOS);
+
+        let can_show_symbols = || {
+            let ModifierNames {
+                alt,
+                ctrl,
+                shift,
+                mac_cmd,
+                ..
+            } = ModifierNames::SYMBOLS;
+
+            let font_id = TextStyle::Body.resolve(&self.style());
+            let fonts = self.fonts();
+            let mut fonts = fonts.lock();
+            let font = fonts.fonts.font(&font_id);
+            font.has_glyphs(alt)
+                && font.has_glyphs(ctrl)
+                && font.has_glyphs(shift)
+                && font.has_glyphs(mac_cmd)
+        };
+
+        if is_mac && can_show_symbols() {
+            shortcut.format(&ModifierNames::SYMBOLS, is_mac)
+        } else {
+            shortcut.format(&ModifierNames::NAMES, is_mac)
+        }
+    }
 }
 
 impl Context {
@@ -571,7 +635,10 @@ impl Context {
         let mut ctx = self.write();
         ctx.repaint_requests = 2;
         if let Some(callback) = &ctx.request_repaint_callback {
-            (callback)();
+            if !ctx.has_requested_repaint_this_frame {
+                (callback)();
+                ctx.has_requested_repaint_this_frame = true;
+            }
         }
     }
 
@@ -850,12 +917,18 @@ impl Context {
             self.read().repaint_after
         };
 
-        self.write().requested_repaint_last_frame = repaint_after.is_zero();
-        // make sure we reset the repaint_after duration.
-        // otherwise, if repaint_after is low, then any widget setting repaint_after next frame,
-        // will fail to overwrite the previous lower value. and thus, repaints will never
-        // go back to higher values.
-        self.write().repaint_after = std::time::Duration::MAX;
+        {
+            let ctx_impl = &mut *self.write();
+            ctx_impl.requested_repaint_last_frame = repaint_after.is_zero();
+
+            ctx_impl.has_requested_repaint_this_frame = false; // allow new calls between frames
+
+            // make sure we reset the repaint_after duration.
+            // otherwise, if repaint_after is low, then any widget setting repaint_after next frame,
+            // will fail to overwrite the previous lower value. and thus, repaints will never
+            // go back to higher values.
+            ctx_impl.repaint_after = std::time::Duration::MAX;
+        }
         let shapes = self.drain_paint_lists();
 
         FullOutput {
