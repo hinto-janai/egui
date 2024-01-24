@@ -308,7 +308,11 @@ impl State {
                     consumed: egui_ctx.wants_keyboard_input(),
                 }
             }
-            WindowEvent::KeyboardInput { input, .. } => {
+            WindowEvent::KeyboardInput {
+                input,
+                is_synthetic: false,
+                ..
+            } => {
                 self.on_keyboard_input(input);
                 // When pressing the Tab key, egui focuses the first focusable element, hence Tab always consumes.
                 let consumed = egui_ctx.wants_keyboard_input()
@@ -318,6 +322,12 @@ impl State {
                     consumed,
                 }
             }
+            WindowEvent::KeyboardInput {
+                is_synthetic: true, ..
+            } => EventResponse {
+                repaint: false,
+                consumed: true,
+            },
             WindowEvent::Focused(focused) => {
                 self.egui_input.focused = *focused;
                 // We will not be given a KeyboardInput event when the modifiers are released while
