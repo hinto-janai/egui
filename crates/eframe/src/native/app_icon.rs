@@ -2,16 +2,24 @@
 //!
 //! TODO(emilk): port this to [`winit`].
 
-use crate::IconData;
+use std::sync::Arc;
+
+use egui::IconData;
 
 pub struct AppTitleIconSetter {
     title: String,
-    icon_data: Option<IconData>,
+    icon_data: Option<Arc<IconData>>,
     status: AppIconStatus,
 }
 
 impl AppTitleIconSetter {
-    pub fn new(title: String, icon_data: Option<IconData>) -> Self {
+    pub fn new(title: String, mut icon_data: Option<Arc<IconData>>) -> Self {
+        if let Some(icon) = &icon_data {
+            if **icon == IconData::default() {
+                icon_data = None;
+            }
+        }
+
         Self {
             title,
             icon_data,
@@ -22,7 +30,7 @@ impl AppTitleIconSetter {
     /// Call once per frame; we will set the icon when we can.
     pub fn update(&mut self) {
         if self.status == AppIconStatus::NotSetTryAgain {
-            self.status = set_title_and_icon(&self.title, self.icon_data.as_ref());
+            self.status = set_title_and_icon(&self.title, self.icon_data.as_deref());
         }
     }
 }
@@ -39,7 +47,7 @@ enum AppIconStatus {
     NotSetTryAgain,
 
     /// We successfully set the icon and it should be visible now.
-    #[allow(dead_code)] // Not used on Linux
+    #[allow(dead_code, clippy::allow_attributes)] // Not used on Linux
     Set,
 }
 
@@ -51,7 +59,7 @@ enum AppIconStatus {
 /// Since window creation can be lazy, call this every frame until it's either successfully or gave up.
 /// (See [`AppIconStatus`])
 fn set_title_and_icon(_title: &str, _icon_data: Option<&IconData>) -> AppIconStatus {
-    crate::profile_function!();
+    profiling::function_scope!();
 
     #[cfg(target_os = "windows")]
     {
@@ -63,14 +71,15 @@ fn set_title_and_icon(_title: &str, _icon_data: Option<&IconData>) -> AppIconSta
     #[cfg(target_os = "macos")]
     return set_title_and_icon_mac(_title, _icon_data);
 
-    #[allow(unreachable_code)]
+    #[allow(unreachable_code, clippy::allow_attributes)]
     AppIconStatus::NotSetIgnored
 }
 
 /// Set icon for Windows applications.
 #[cfg(target_os = "windows")]
-#[allow(unsafe_code)]
+#[expect(unsafe_code)]
 fn set_app_icon_windows(icon_data: &IconData) -> AppIconStatus {
+    use crate::icon_data::IconDataExt as _;
     use winapi::um::winuser;
 
     // We would get fairly far already with winit's `set_window_icon` (which is exposed to eframe) actually!
@@ -109,7 +118,7 @@ fn set_app_icon_windows(icon_data: &IconData) -> AppIconStatus {
         if image_scaled
             .write_to(
                 &mut std::io::Cursor::new(&mut image_scaled_bytes),
-                image::ImageOutputFormat::Png,
+                image::ImageFormat::Png,
             )
             .is_err()
         {
@@ -189,22 +198,25 @@ fn set_app_icon_windows(icon_data: &IconData) -> AppIconStatus {
 
 /// Set icon & app title for `MacOS` applications.
 #[cfg(target_os = "macos")]
-#[allow(unsafe_code)]
+#[expect(unsafe_code)]
 fn set_title_and_icon_mac(title: &str, icon_data: Option<&IconData>) -> AppIconStatus {
-    crate::profile_function!();
+    use crate::icon_data::IconDataExt as _;
+    profiling::function_scope!();
 
-    use cocoa::{
-        appkit::{NSApp, NSApplication, NSImage, NSMenu, NSWindow},
-        base::{id, nil},
-        foundation::{NSData, NSString},
-    };
-    use objc::{msg_send, sel, sel_impl};
+    use objc2::ClassType as _;
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSString;
 
-    let png_bytes = if let Some(icon_data) = icon_data {
-        match icon_data.to_png_bytes() {
-            Ok(png_bytes) => Some(png_bytes),
+    // Do NOT use png even though creating `NSImage` from it is much easier than from raw images data!
+    //
+    // Some MacOS versions have a bug where creating an `NSImage` from a png will cause it to load an arbitrary `libpng.dylib`.
+    // If this dylib isn't the right version, the application will crash with SIGBUS.
+    // For details see https://github.com/emilk/egui/issues/7155
+    let image = if let Some(icon_data) = icon_data {
+        match icon_data.to_image() {
+            Ok(image) => Some(image),
             Err(err) => {
-                log::warn!("Failed to convert IconData to png: {err}");
+                log::warn!("Failed to read icon data: {err}");
                 return AppIconStatus::NotSetIgnored;
             }
         }
@@ -212,27 +224,64 @@ fn set_title_and_icon_mac(title: &str, icon_data: Option<&IconData>) -> AppIconS
         None
     };
 
-    // SAFETY: Accessing raw data from icon in a read-only manner. Icon data is static!
+    // TODO(madsmtm): Move this into `objc2-app-kit`
+    unsafe extern "C" {
+        static NSApp: Option<&'static NSApplication>;
+    }
+
+    // SAFETY: we don't do anything dangerous here
     unsafe {
-        let app = NSApp();
+        let Some(app) = NSApp else {
+            log::debug!("NSApp is null");
+            return AppIconStatus::NotSetIgnored;
+        };
 
-        if let Some(png_bytes) = png_bytes {
-            let data = NSData::dataWithBytes_length_(
-                nil,
-                png_bytes.as_ptr().cast::<std::ffi::c_void>(),
-                png_bytes.len() as u64,
+        if let Some(image) = image {
+            use objc2_app_kit::{NSBitmapImageRep, NSDeviceRGBColorSpace};
+            use objc2_foundation::NSSize;
+
+            log::trace!(
+                "NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel"
             );
-            let app_icon = NSImage::initWithData_(NSImage::alloc(nil), data);
+            let Some(image_rep) = NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+                NSBitmapImageRep::alloc(),
+                [image.as_raw().as_ptr().cast_mut()].as_mut_ptr(),
+                image.width() as isize,
+                image.height() as isize,
+                8, // bits per sample
+                4, // samples per pixel
+                true, // has alpha
+                false, // is not planar
+                NSDeviceRGBColorSpace,
+                (image.width() * 4) as isize, // bytes per row
+                32 // bits per pixel
+            ) else {
+                log::warn!("Failed to create NSBitmapImageRep from app icon data.");
+                return AppIconStatus::NotSetIgnored;
+            };
 
-            crate::profile_scope!("setApplicationIconImage_");
-            app.setApplicationIconImage_(app_icon);
+            log::trace!("NSImage::initWithSize");
+            let app_icon = NSImage::initWithSize(
+                NSImage::alloc(),
+                NSSize::new(image.width() as f64, image.height() as f64),
+            );
+            log::trace!("NSImage::addRepresentation");
+            app_icon.addRepresentation(&image_rep);
+
+            profiling::scope!("setApplicationIconImage_");
+            log::trace!("setApplicationIconImage…");
+            app.setApplicationIconImage(Some(&app_icon));
         }
 
         // Change the title in the top bar - for python processes this would be again "python" otherwise.
-        let main_menu = app.mainMenu();
-        let app_menu: id = msg_send![main_menu.itemAtIndex_(0), submenu];
-        crate::profile_scope!("setTitle_");
-        app_menu.setTitle_(NSString::alloc(nil).init_str(title));
+        if let Some(main_menu) = app.mainMenu() {
+            if let Some(item) = main_menu.itemAtIndex(0) {
+                if let Some(app_menu) = item.submenu() {
+                    profiling::scope!("setTitle_");
+                    app_menu.setTitle(&NSString::from_str(title));
+                }
+            }
+        }
 
         // The title in the Dock apparently can't be changed.
         // At least these people didn't figure it out either:

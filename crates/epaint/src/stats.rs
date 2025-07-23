@@ -1,6 +1,6 @@
 //! Collect statistics about what is being painted.
 
-use crate::*;
+use crate::{ClippedShape, Galley, Mesh, Primitive, Shape};
 
 /// Size of the elements in a vector/array.
 #[derive(Clone, Copy, PartialEq)]
@@ -32,9 +32,9 @@ impl<T> From<&[T]> for AllocInfo {
 }
 
 impl std::ops::Add for AllocInfo {
-    type Output = AllocInfo;
+    type Output = Self;
 
-    fn add(self, rhs: AllocInfo) -> AllocInfo {
+    fn add(self, rhs: Self) -> Self {
         use ElementSize::{Heterogenous, Homogeneous, Unknown};
         let element_size = match (self.element_size, rhs.element_size) {
             (Heterogenous, _) | (_, Heterogenous) => Heterogenous,
@@ -43,7 +43,7 @@ impl std::ops::Add for AllocInfo {
             _ => Heterogenous,
         };
 
-        AllocInfo {
+        Self {
             element_size,
             num_allocs: self.num_allocs + rhs.num_allocs,
             num_elements: self.num_elements + rhs.num_elements,
@@ -53,7 +53,7 @@ impl std::ops::Add for AllocInfo {
 }
 
 impl std::ops::AddAssign for AllocInfo {
-    fn add_assign(&mut self, rhs: AllocInfo) {
+    fn add_assign(&mut self, rhs: Self) {
         *self = *self + rhs;
     }
 }
@@ -91,7 +91,7 @@ impl AllocInfo {
             + galley.rows.iter().map(Self::from_galley_row).sum()
     }
 
-    fn from_galley_row(row: &crate::text::Row) -> Self {
+    fn from_galley_row(row: &crate::text::PlacedRow) -> Self {
         Self::from_mesh(&row.visuals.mesh) + Self::from_slice(&row.glyphs)
     }
 
@@ -111,7 +111,10 @@ impl AllocInfo {
     }
 
     pub fn num_elements(&self) -> usize {
-        assert!(self.element_size != ElementSize::Heterogenous);
+        assert!(
+            self.element_size != ElementSize::Heterogenous,
+            "Heterogenous element size"
+        );
         self.num_elements
     }
 
@@ -192,7 +195,7 @@ impl PaintStats {
     fn add(&mut self, shape: &Shape) {
         match shape {
             Shape::Vec(shapes) => {
-                // self += PaintStats::from_shapes(&shapes); // TODO
+                // self += PaintStats::from_shapes(&shapes); // TODO(emilk)
                 self.shapes += AllocInfo::from_slice(shapes);
                 self.shape_vec += AllocInfo::from_slice(shapes);
                 for shape in shapes {
@@ -201,6 +204,7 @@ impl PaintStats {
             }
             Shape::Noop
             | Shape::Circle { .. }
+            | Shape::Ellipse { .. }
             | Shape::LineSegment { .. }
             | Shape::Rect { .. }
             | Shape::CubicBezier(_)

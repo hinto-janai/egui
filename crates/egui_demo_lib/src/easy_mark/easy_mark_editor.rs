@@ -1,4 +1,6 @@
-use egui::{text_edit::CCursorRange, *};
+use egui::{
+    Key, KeyboardShortcut, Modifiers, ScrollArea, TextBuffer, TextEdit, Ui, text::CCursorRange,
+};
 
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -45,10 +47,10 @@ impl EasyMarkEditor {
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         egui::Grid::new("controls").show(ui, |ui| {
-            let _ = ui.button("Hotkeys").on_hover_ui(nested_hotkeys_ui);
+            let _response = ui.button("Hotkeys").on_hover_ui(nested_hotkeys_ui);
             ui.checkbox(&mut self.show_rendered, "Show rendered");
             ui.checkbox(&mut self.highlight_editor, "Highlight editor");
-            egui::reset_button(ui, self);
+            egui::reset_button(ui, self, "Reset");
             ui.end_row();
         });
         ui.separator();
@@ -56,10 +58,10 @@ impl EasyMarkEditor {
         if self.show_rendered {
             ui.columns(2, |columns| {
                 ScrollArea::vertical()
-                    .id_source("source")
+                    .id_salt("source")
                     .show(&mut columns[0], |ui| self.editor_ui(ui));
                 ScrollArea::vertical()
-                    .id_source("rendered")
+                    .id_salt("rendered")
                     .show(&mut columns[1], |ui| {
                         // TODO(emilk): we can save some more CPU by caching the rendered output.
                         crate::easy_mark::easy_mark(ui, &self.code);
@@ -67,7 +69,7 @@ impl EasyMarkEditor {
             });
         } else {
             ScrollArea::vertical()
-                .id_source("source")
+                .id_salt("source")
                 .show(ui, |ui| self.editor_ui(ui));
         }
     }
@@ -78,8 +80,8 @@ impl EasyMarkEditor {
         } = self;
 
         let response = if self.highlight_editor {
-            let mut layouter = |ui: &egui::Ui, easymark: &str, wrap_width: f32| {
-                let mut layout_job = highlighter.highlight(ui.style(), easymark);
+            let mut layouter = |ui: &egui::Ui, easymark: &dyn TextBuffer, wrap_width: f32| {
+                let mut layout_job = highlighter.highlight(ui.style(), easymark.as_str());
                 layout_job.wrap.max_width = wrap_width;
                 ui.fonts(|f| f.layout_job(layout_job))
             };
@@ -95,10 +97,10 @@ impl EasyMarkEditor {
         };
 
         if let Some(mut state) = TextEdit::load_state(ui.ctx(), response.id) {
-            if let Some(mut ccursor_range) = state.ccursor_range() {
+            if let Some(mut ccursor_range) = state.cursor.char_range() {
                 let any_change = shortcuts(ui, code, &mut ccursor_range);
                 if any_change {
-                    state.set_ccursor_range(Some(ccursor_range));
+                    state.cursor.set_char_range(Some(ccursor_range));
                     state.store(ui.ctx(), response.id);
                 }
             }
@@ -144,7 +146,7 @@ fn shortcuts(ui: &Ui, code: &mut dyn TextBuffer, ccursor_range: &mut CCursorRang
     if ui.input_mut(|i| i.consume_shortcut(&SHORTCUT_INDENT)) {
         // This is a placeholder till we can indent the active line
         any_change = true;
-        let [primary, _secondary] = ccursor_range.sorted();
+        let [primary, _secondary] = ccursor_range.sorted_cursors();
 
         let advance = code.insert_text("  ", primary.index);
         ccursor_range.primary.index += advance;
@@ -175,7 +177,7 @@ fn toggle_surrounding(
     ccursor_range: &mut CCursorRange,
     surrounding: &str,
 ) {
-    let [primary, secondary] = ccursor_range.sorted();
+    let [primary, secondary] = ccursor_range.sorted_cursors();
 
     let surrounding_ccount = surrounding.chars().count();
 
@@ -235,7 +237,7 @@ Goals:
 2. easy to learn
 3. similar to markdown
 
-[The reference parser](https://github.com/emilk/egui/blob/master/crates/egui_demo_lib/src/easy_mark/easy_mark_parser.rs) is \~250 lines of code, using only the Rust standard library. The parser uses no look-ahead or recursion.
+[The reference parser](https://github.com/emilk/egui/blob/main/crates/egui_demo_lib/src/easy_mark/easy_mark_parser.rs) is \~250 lines of code, using only the Rust standard library. The parser uses no look-ahead or recursion.
 
 There is never more than one way to accomplish the same thing, and each special character is only used for one thing. For instance `*` is used for *strong* and `-` is used for bullet lists. There is no alternative way to specify the *strong* style or getting a bullet list.
 
@@ -261,7 +263,7 @@ The style characters are chosen to be similar to what they are representing:
   `$` = $small$
   `^` = ^raised^
 
-# TODO
+# To do
 - Sub-headers (`## h2`, `### h3` etc)
 - Hotkey Editor
 - International keyboard algorithm for non-letter keys
@@ -277,5 +279,5 @@ The style characters are chosen to be similar to what they are representing:
   - `<url>` and `[url](url)` do the same thing yet look completely different.
   - let's keep similarity with images
 - Tables
-- Inspiration: <https://mycorrhiza.lesarbr.es/page/mycomarkup>
+- Inspiration: <https://mycorrhiza.wiki/help/en/mycomarkup>
 "#;

@@ -1,4 +1,4 @@
-use chrono::{Datelike, NaiveDate, Weekday};
+use chrono::{Datelike as _, NaiveDate, Weekday};
 
 use egui::{Align, Button, Color32, ComboBox, Direction, Id, Layout, RichText, Ui, Vec2};
 
@@ -6,7 +6,8 @@ use super::{button::DatePickerButtonState, month_data};
 
 use crate::{Column, Size, StripBuilder, TableBuilder};
 
-#[derive(Default, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Default, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 struct DatePickerPopupState {
     year: i32,
     month: u32,
@@ -33,22 +34,24 @@ pub(crate) struct DatePickerPopup<'a> {
     pub arrows: bool,
     pub calendar: bool,
     pub calendar_week: bool,
+    pub highlight_weekends: bool,
+    pub start_end_years: Option<std::ops::RangeInclusive<i32>>,
 }
 
-impl<'a> DatePickerPopup<'a> {
+impl DatePickerPopup<'_> {
     /// Returns `true` if user pressed `Save` button.
     pub fn draw(&mut self, ui: &mut Ui) -> bool {
         let id = ui.make_persistent_id("date_picker");
         let today = chrono::offset::Utc::now().date_naive();
         let mut popup_state = ui
-            .memory_mut(|mem| mem.data.get_persisted::<DatePickerPopupState>(id))
+            .data_mut(|data| data.get_persisted::<DatePickerPopupState>(id))
             .unwrap_or_default();
         if !popup_state.setup {
             popup_state.year = self.selection.year();
             popup_state.month = self.selection.month();
             popup_state.day = self.selection.day();
             popup_state.setup = true;
-            ui.memory_mut(|mem| mem.data.insert_persisted(id, popup_state.clone()));
+            ui.data_mut(|data| data.insert_persisted(id, popup_state.clone()));
         }
 
         let weeks = month_data(popup_state.year, popup_state.month);
@@ -56,6 +59,9 @@ impl<'a> DatePickerPopup<'a> {
         let height = 20.0;
         let spacing = 2.0;
         ui.spacing_mut().item_spacing = Vec2::splat(spacing);
+
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend); // Don't wrap any text
+
         StripBuilder::new(ui)
             .clip(false)
             .sizes(
@@ -76,10 +82,14 @@ impl<'a> DatePickerPopup<'a> {
                     strip.strip(|builder| {
                         builder.sizes(Size::remainder(), 3).horizontal(|mut strip| {
                             strip.cell(|ui| {
-                                ComboBox::from_id_source("date_picker_year")
+                                ComboBox::from_id_salt("date_picker_year")
                                     .selected_text(popup_state.year.to_string())
                                     .show_ui(ui, |ui| {
-                                        for year in today.year() - 5..today.year() + 10 {
+                                        let (start_year, end_year) = match &self.start_end_years {
+                                            Some(range) => (*range.start(), *range.end()),
+                                            None => (today.year() - 100, today.year() + 10),
+                                        };
+                                        for year in start_year..=end_year {
                                             if ui
                                                 .selectable_value(
                                                     &mut popup_state.year,
@@ -100,7 +110,7 @@ impl<'a> DatePickerPopup<'a> {
                                     });
                             });
                             strip.cell(|ui| {
-                                ComboBox::from_id_source("date_picker_month")
+                                ComboBox::from_id_salt("date_picker_month")
                                     .selected_text(month_name(popup_state.month))
                                     .show_ui(ui, |ui| {
                                         for month in 1..=12 {
@@ -124,7 +134,7 @@ impl<'a> DatePickerPopup<'a> {
                                     });
                             });
                             strip.cell(|ui| {
-                                ComboBox::from_id_source("date_picker_day")
+                                ComboBox::from_id_salt("date_picker_day")
                                     .selected_text(popup_state.day.to_string())
                                     .show_ui(ui, |ui| {
                                         for day in 1..=popup_state.last_day_of_month() {
@@ -161,8 +171,8 @@ impl<'a> DatePickerPopup<'a> {
                                         popup_state.year -= 1;
                                         popup_state.day =
                                             popup_state.day.min(popup_state.last_day_of_month());
-                                        ui.memory_mut(|mem| {
-                                            mem.data.insert_persisted(id, popup_state.clone());
+                                        ui.data_mut(|data| {
+                                            data.insert_persisted(id, popup_state.clone());
                                         });
                                     }
                                 });
@@ -181,8 +191,8 @@ impl<'a> DatePickerPopup<'a> {
                                         }
                                         popup_state.day =
                                             popup_state.day.min(popup_state.last_day_of_month());
-                                        ui.memory_mut(|mem| {
-                                            mem.data.insert_persisted(id, popup_state.clone());
+                                        ui.data_mut(|data| {
+                                            data.insert_persisted(id, popup_state.clone());
                                         });
                                     }
                                 });
@@ -199,8 +209,8 @@ impl<'a> DatePickerPopup<'a> {
                                             }
                                             popup_state.day = popup_state.last_day_of_month();
                                         }
-                                        ui.memory_mut(|mem| {
-                                            mem.data.insert_persisted(id, popup_state.clone());
+                                        ui.data_mut(|data| {
+                                            data.insert_persisted(id, popup_state.clone());
                                         });
                                     }
                                 });
@@ -217,8 +227,8 @@ impl<'a> DatePickerPopup<'a> {
                                                 popup_state.year += 1;
                                             }
                                         }
-                                        ui.memory_mut(|mem| {
-                                            mem.data.insert_persisted(id, popup_state.clone());
+                                        ui.data_mut(|data| {
+                                            data.insert_persisted(id, popup_state.clone());
                                         });
                                     }
                                 });
@@ -233,8 +243,8 @@ impl<'a> DatePickerPopup<'a> {
                                         }
                                         popup_state.day =
                                             popup_state.day.min(popup_state.last_day_of_month());
-                                        ui.memory_mut(|mem| {
-                                            mem.data.insert_persisted(id, popup_state.clone());
+                                        ui.data_mut(|data| {
+                                            data.insert_persisted(id, popup_state.clone());
                                         });
                                     }
                                 });
@@ -245,8 +255,8 @@ impl<'a> DatePickerPopup<'a> {
                                         popup_state.year += 1;
                                         popup_state.day =
                                             popup_state.day.min(popup_state.last_day_of_month());
-                                        ui.memory_mut(|mem| {
-                                            mem.data.insert_persisted(id, popup_state.clone());
+                                        ui.data_mut(|data| {
+                                            data.insert_persisted(id, popup_state.clone());
                                         });
                                     }
                                 });
@@ -304,8 +314,9 @@ impl<'a> DatePickerPopup<'a> {
                                                             && popup_state.day == day.day()
                                                         {
                                                             ui.visuals().selection.bg_fill
-                                                        } else if day.weekday() == Weekday::Sat
-                                                            || day.weekday() == Weekday::Sun
+                                                        } else if (day.weekday() == Weekday::Sat
+                                                            || day.weekday() == Weekday::Sun)
+                                                            && self.highlight_weekends
                                                         {
                                                             if ui.visuals().dark_mode {
                                                                 Color32::DARK_RED
@@ -355,8 +366,8 @@ impl<'a> DatePickerPopup<'a> {
                                                             popup_state.year = day.year();
                                                             popup_state.month = day.month();
                                                             popup_state.day = day.day();
-                                                            ui.memory_mut(|mem| {
-                                                                mem.data.insert_persisted(
+                                                            ui.data_mut(|data| {
+                                                                data.insert_persisted(
                                                                     id,
                                                                     popup_state.clone(),
                                                                 );
@@ -402,10 +413,9 @@ impl<'a> DatePickerPopup<'a> {
 
         if close {
             popup_state.setup = false;
-            ui.memory_mut(|mem| {
-                mem.data.insert_persisted(id, popup_state);
-                mem.data
-                    .get_persisted_mut_or_default::<DatePickerButtonState>(self.button_id)
+            ui.data_mut(|data| {
+                data.insert_persisted(id, popup_state);
+                data.get_persisted_mut_or_default::<DatePickerButtonState>(self.button_id)
                     .picker_visible = false;
             });
         }

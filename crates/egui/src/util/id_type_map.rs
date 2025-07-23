@@ -119,7 +119,7 @@ impl std::fmt::Debug for Element {
         match &self {
             Self::Value { value, .. } => f
                 .debug_struct("Element::Value")
-                .field("type_id", &value.type_id())
+                .field("type_id", &(**value).type_id())
                 .finish_non_exhaustive(),
             Self::Serialized(SerializedElement {
                 type_id,
@@ -308,7 +308,7 @@ fn from_ron_str<T: serde::de::DeserializeOwned>(ron: &str) -> Option<T> {
 use crate::Id;
 
 // TODO(emilk): make IdTypeMap generic over the key (`Id`), and make a library of IdTypeMap.
-/// Stores values identified by an [`Id`] AND a the [`std::any::TypeId`] of the value.
+/// Stores values identified by an [`Id`] AND the [`std::any::TypeId`] of the value.
 ///
 /// In other words, it maps `(Id, TypeId)` to any value you want.
 ///
@@ -318,7 +318,7 @@ use crate::Id;
 ///
 /// Values can either be "persisted" (serializable) or "temporary" (cleared when egui is shut down).
 ///
-/// You can store state using the key [`Id::null`]. The state will then only be identified by its type.
+/// You can store state using the key [`Id::NULL`]. The state will then only be identified by its type.
 ///
 /// ```
 /// # use egui::{Id, util::IdTypeMap};
@@ -467,7 +467,7 @@ impl IdTypeMap {
 
     /// For tests
     #[cfg(feature = "persistence")]
-    #[allow(unused)]
+    #[allow(unused, clippy::allow_attributes)]
     fn get_generation<T: SerializableAny>(&self, id: Id) -> Option<usize> {
         let element = self.map.get(&hash(TypeId::of::<T>(), id))?;
         match element {
@@ -476,11 +476,19 @@ impl IdTypeMap {
         }
     }
 
-    /// Remove the state of this type an id.
+    /// Remove the state of this type and id.
     #[inline]
     pub fn remove<T: 'static>(&mut self, id: Id) {
         let hash = hash(TypeId::of::<T>(), id);
         self.map.remove(&hash);
+    }
+
+    /// Remove and fetch the state of this type and id.
+    #[inline]
+    pub fn remove_temp<T: 'static + Default>(&mut self, id: Id) -> Option<T> {
+        let hash = hash(TypeId::of::<T>(), id);
+        let mut element = self.map.remove(&hash)?;
+        Some(std::mem::take(element.get_mut_temp()?))
     }
 
     /// Note all state of the given type.
@@ -566,7 +574,7 @@ struct PersistedMap(Vec<(u64, SerializedElement)>);
 #[cfg(feature = "persistence")]
 impl PersistedMap {
     fn from_map(map: &IdTypeMap) -> Self {
-        crate::profile_function!();
+        profiling::function_scope!();
 
         use std::collections::BTreeMap;
 
@@ -585,7 +593,7 @@ impl PersistedMap {
         let max_bytes_per_type = map.max_bytes_per_type;
 
         {
-            crate::profile_scope!("gather");
+            profiling::scope!("gather");
             for (hash, element) in &map.map {
                 if let Some(element) = element.to_serialize() {
                     let stats = types_map.entry(element.type_id).or_default();
@@ -602,7 +610,7 @@ impl PersistedMap {
         let mut persisted = vec![];
 
         {
-            crate::profile_scope!("gc");
+            profiling::scope!("gc");
             for stats in types_map.values() {
                 let mut bytes_written = 0;
 
@@ -626,7 +634,7 @@ impl PersistedMap {
     }
 
     fn into_map(self) -> IdTypeMap {
-        crate::profile_function!();
+        profiling::function_scope!();
         let map = self
             .0
             .into_iter()
@@ -663,7 +671,7 @@ impl serde::Serialize for IdTypeMap {
     where
         S: serde::Serializer,
     {
-        crate::profile_scope!("IdTypeMap::serialize");
+        profiling::scope!("IdTypeMap::serialize");
         PersistedMap::from_map(self).serialize(serializer)
     }
 }
@@ -674,7 +682,7 @@ impl<'de> serde::Deserialize<'de> for IdTypeMap {
     where
         D: serde::Deserializer<'de>,
     {
-        crate::profile_scope!("IdTypeMap::deserialize");
+        profiling::scope!("IdTypeMap::deserialize");
         <PersistedMap>::deserialize(deserializer).map(PersistedMap::into_map)
     }
 }

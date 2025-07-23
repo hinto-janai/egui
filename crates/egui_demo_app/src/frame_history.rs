@@ -32,14 +32,14 @@ impl FrameHistory {
         1.0 / self.frame_times.mean_time_interval().unwrap_or_default()
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) {
+    pub fn ui(&self, ui: &mut egui::Ui) {
         ui.label(format!(
             "Mean CPU usage: {:.2} ms / frame",
             1e3 * self.mean_frame_time()
         ))
         .on_hover_text(
-            "Includes egui layout and tessellation time.\n\
-            Does not include GPU usage, nor overhead for sending data to GPU.",
+            "Includes all app logic, egui layout, tessellation, and rendering.\n\
+            Does not include waiting for vsync.",
         );
         egui::warn_if_debug_build(ui);
 
@@ -52,8 +52,8 @@ impl FrameHistory {
         }
     }
 
-    fn graph(&mut self, ui: &mut egui::Ui) -> egui::Response {
-        use egui::*;
+    fn graph(&self, ui: &mut egui::Ui) -> egui::Response {
+        use egui::{Pos2, Rect, Sense, Shape, Stroke, TextStyle, emath, epaint, pos2, vec2};
 
         ui.label("egui CPU usage history");
 
@@ -72,9 +72,10 @@ impl FrameHistory {
         let mut shapes = Vec::with_capacity(3 + 2 * history.len());
         shapes.push(Shape::Rect(epaint::RectShape::new(
             rect,
-            style.rounding,
+            style.corner_radius,
             ui.visuals().extreme_bg_color,
             ui.style().noninteractive().bg_stroke,
+            egui::StrokeKind::Inside,
         )));
 
         let rect = rect.shrink(4.0);

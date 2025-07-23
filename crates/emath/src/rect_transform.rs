@@ -1,4 +1,4 @@
-use crate::{pos2, remap, remap_clamp, Pos2, Rect, Vec2};
+use crate::{Pos2, Rect, Vec2, pos2, remap, remap_clamp};
 
 /// Linearly transforms positions from one [`Rect`] to another.
 ///
@@ -34,7 +34,7 @@ impl RectTransform {
         self.to.size() / self.from.size()
     }
 
-    pub fn inverse(&self) -> RectTransform {
+    pub fn inverse(&self) -> Self {
         Self::from_to(self.to, self.from)
     }
 

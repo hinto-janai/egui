@@ -1,8 +1,11 @@
+use emath::GuiRounding as _;
+use epaint::text::TextFormat;
+use std::fmt::Formatter;
 use std::{borrow::Cow, sync::Arc};
 
 use crate::{
-    style::WidgetVisuals, text::LayoutJob, Align, Color32, FontFamily, FontSelection, Galley, Pos2,
-    Style, TextStyle, Ui, Visuals,
+    Align, Color32, FontFamily, FontSelection, Galley, Style, TextStyle, TextWrapMode, Ui, Visuals,
+    text::{LayoutJob, TextWrapping},
 };
 
 /// Text and optional style choices for it.
@@ -20,7 +23,7 @@ use crate::{
 /// RichText::new("colored").color(Color32::RED);
 /// RichText::new("Large and underlined").size(20.0).underline();
 /// ```
-#[derive(Clone, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RichText {
     text: String,
     size: Option<f32>,
@@ -29,6 +32,7 @@ pub struct RichText {
     family: Option<FontFamily>,
     text_style: Option<TextStyle>,
     background_color: Color32,
+    expand_bg: f32,
     text_color: Option<Color32>,
     code: bool,
     strong: bool,
@@ -39,31 +43,75 @@ pub struct RichText {
     raised: bool,
 }
 
+impl Default for RichText {
+    fn default() -> Self {
+        Self {
+            text: Default::default(),
+            size: Default::default(),
+            extra_letter_spacing: Default::default(),
+            line_height: Default::default(),
+            family: Default::default(),
+            text_style: Default::default(),
+            background_color: Default::default(),
+            expand_bg: 1.0,
+            text_color: Default::default(),
+            code: Default::default(),
+            strong: Default::default(),
+            weak: Default::default(),
+            strikethrough: Default::default(),
+            underline: Default::default(),
+            italics: Default::default(),
+            raised: Default::default(),
+        }
+    }
+}
+
 impl From<&str> for RichText {
     #[inline]
     fn from(text: &str) -> Self {
-        RichText::new(text)
+        Self::new(text)
     }
 }
 
 impl From<&String> for RichText {
     #[inline]
     fn from(text: &String) -> Self {
-        RichText::new(text)
+        Self::new(text)
     }
 }
 
 impl From<&mut String> for RichText {
     #[inline]
     fn from(text: &mut String) -> Self {
-        RichText::new(text.clone())
+        Self::new(text.clone())
     }
 }
 
 impl From<String> for RichText {
     #[inline]
     fn from(text: String) -> Self {
-        RichText::new(text)
+        Self::new(text)
+    }
+}
+
+impl From<&Box<str>> for RichText {
+    #[inline]
+    fn from(text: &Box<str>) -> Self {
+        Self::new(text.clone())
+    }
+}
+
+impl From<&mut Box<str>> for RichText {
+    #[inline]
+    fn from(text: &mut Box<str>) -> Self {
+        Self::new(text.clone())
+    }
+}
+
+impl From<Box<str>> for RichText {
+    #[inline]
+    fn from(text: Box<str>) -> Self {
+        Self::new(text)
     }
 }
 
@@ -247,6 +295,9 @@ impl RichText {
     }
 
     /// Override text color.
+    ///
+    /// If not set, [`Color32::PLACEHOLDER`] will be used,
+    /// which will be replaced with a color chosen by the widget that paints the text.
     #[inline]
     pub fn color(mut self, color: impl Into<Color32>) -> Self {
         self.text_color = Some(color.into());
@@ -254,6 +305,8 @@ impl RichText {
     }
 
     /// Read the font height of the selected text style.
+    ///
+    /// Returns a value rounded to [`emath::GUI_ROUNDING`].
     pub fn font_height(&self, fonts: &epaint::Fonts, style: &Style) -> f32 {
         let mut font_id = self.text_style.as_ref().map_or_else(
             || FontSelection::Default.resolve(style),
@@ -310,17 +363,14 @@ impl RichText {
         layout_job.append(&text, 0.0, format);
     }
 
-    fn into_text_job(
+    fn into_layout_job(
         self,
         style: &Style,
         fallback_font: FontSelection,
         default_valign: Align,
-    ) -> WidgetTextJob {
-        let job_has_color = self.get_text_color(&style.visuals).is_some();
+    ) -> LayoutJob {
         let (text, text_format) = self.into_text_and_format(style, fallback_font, default_valign);
-
-        let job = LayoutJob::single_section(text, text_format);
-        WidgetTextJob { job, job_has_color }
+        LayoutJob::single_section(text, text_format)
     }
 
     fn into_text_and_format(
@@ -339,6 +389,7 @@ impl RichText {
             family,
             text_style,
             background_color,
+            expand_bg,
             text_color: _, // already used by `get_text_color`
             code,
             strong: _, // already used by `get_text_color`
@@ -350,7 +401,7 @@ impl RichText {
         } = self;
 
         let line_color = text_color.unwrap_or_else(|| style.visuals.text_color());
-        let text_color = text_color.unwrap_or(crate::Color32::TEMPORARY_COLOR);
+        let text_color = text_color.unwrap_or(crate::Color32::PLACEHOLDER);
 
         let font_id = {
             let mut font_id = text_style
@@ -359,6 +410,9 @@ impl RichText {
                     || fallback_font.resolve(style),
                     |text_style| text_style.resolve(style),
                 );
+            if let Some(fid) = style.override_font_id.clone() {
+                font_id = fid;
+            }
             if let Some(size) = size {
                 font_id.size = size;
             }
@@ -401,6 +455,7 @@ impl RichText {
                 underline,
                 strikethrough,
                 valign,
+                expand_bg,
             },
         )
     }
@@ -429,9 +484,21 @@ impl RichText {
 /// but it can be a [`RichText`] (text with color, style, etc),
 /// a [`LayoutJob`] (for when you want full control of how the text looks)
 /// or text that has already been laid out in a [`Galley`].
+///
+/// You can color the text however you want, or use [`Color32::PLACEHOLDER`]
+/// which will be replaced with a color chosen by the widget that paints the text.
 #[derive(Clone)]
 pub enum WidgetText {
-    RichText(RichText),
+    /// Plain unstyled text.
+    ///
+    /// We have this as a special case, as it is the common-case,
+    /// and it uses less memory than [`Self::RichText`].
+    Text(String),
+
+    /// Text and optional style choices for it.
+    ///
+    /// Prefer [`Self::Text`] if there is no styling, as it will be faster.
+    RichText(Arc<RichText>),
 
     /// Use this [`LayoutJob`] when laying out the text.
     ///
@@ -442,15 +509,33 @@ pub enum WidgetText {
     /// of the [`Ui`] the widget is placed in.
     /// If you want all parts of the [`LayoutJob`] respected, then convert it to a
     /// [`Galley`] and use [`Self::Galley`] instead.
-    LayoutJob(LayoutJob),
+    ///
+    /// You can color the text however you want, or use [`Color32::PLACEHOLDER`]
+    /// which will be replaced with a color chosen by the widget that paints the text.
+    LayoutJob(Arc<LayoutJob>),
 
     /// Use exactly this galley when painting the text.
+    ///
+    /// You can color the text however you want, or use [`Color32::PLACEHOLDER`]
+    /// which will be replaced with a color chosen by the widget that paints the text.
     Galley(Arc<Galley>),
+}
+
+impl std::fmt::Debug for WidgetText {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let text = self.text();
+        match self {
+            Self::Text(_) => write!(f, "Text({text:?})"),
+            Self::RichText(_) => write!(f, "RichText({text:?})"),
+            Self::LayoutJob(_) => write!(f, "LayoutJob({text:?})"),
+            Self::Galley(_) => write!(f, "Galley({text:?})"),
+        }
+    }
 }
 
 impl Default for WidgetText {
     fn default() -> Self {
-        Self::RichText(RichText::default())
+        Self::Text(String::new())
     }
 }
 
@@ -458,6 +543,7 @@ impl WidgetText {
     #[inline]
     pub fn is_empty(&self) -> bool {
         match self {
+            Self::Text(text) => text.is_empty(),
             Self::RichText(text) => text.is_empty(),
             Self::LayoutJob(job) => job.is_empty(),
             Self::Galley(galley) => galley.is_empty(),
@@ -467,9 +553,27 @@ impl WidgetText {
     #[inline]
     pub fn text(&self) -> &str {
         match self {
+            Self::Text(text) => text,
             Self::RichText(text) => text.text(),
             Self::LayoutJob(job) => &job.text,
             Self::Galley(galley) => galley.text(),
+        }
+    }
+
+    /// Map the contents based on the provided closure.
+    ///
+    /// - [`Self::Text`] => convert to [`RichText`] and call f
+    /// - [`Self::RichText`] => call f
+    /// - else do nothing
+    #[must_use]
+    fn map_rich_text<F>(self, f: F) -> Self
+    where
+        F: FnOnce(RichText) -> RichText,
+    {
+        match self {
+            Self::Text(text) => Self::RichText(Arc::new(f(RichText::new(text)))),
+            Self::RichText(text) => Self::RichText(Arc::new(f(Arc::unwrap_or_clone(text)))),
+            other => other,
         }
     }
 
@@ -478,10 +582,7 @@ impl WidgetText {
     /// Prefer using [`RichText`] directly!
     #[inline]
     pub fn text_style(self, text_style: TextStyle) -> Self {
-        match self {
-            Self::RichText(text) => Self::RichText(text.text_style(text_style)),
-            Self::LayoutJob(_) | Self::Galley(_) => self,
-        }
+        self.map_rich_text(|text| text.text_style(text_style))
     }
 
     /// Set the [`TextStyle`] unless it has already been set
@@ -489,10 +590,7 @@ impl WidgetText {
     /// Prefer using [`RichText`] directly!
     #[inline]
     pub fn fallback_text_style(self, text_style: TextStyle) -> Self {
-        match self {
-            Self::RichText(text) => Self::RichText(text.fallback_text_style(text_style)),
-            Self::LayoutJob(_) | Self::Galley(_) => self,
-        }
+        self.map_rich_text(|text| text.fallback_text_style(text_style))
     }
 
     /// Override text color if, and only if, this is a [`RichText`].
@@ -500,178 +598,179 @@ impl WidgetText {
     /// Prefer using [`RichText`] directly!
     #[inline]
     pub fn color(self, color: impl Into<Color32>) -> Self {
-        match self {
-            Self::RichText(text) => Self::RichText(text.color(color)),
-            Self::LayoutJob(_) | Self::Galley(_) => self,
-        }
+        self.map_rich_text(|text| text.color(color))
     }
 
     /// Prefer using [`RichText`] directly!
+    #[inline]
     pub fn heading(self) -> Self {
-        match self {
-            Self::RichText(text) => Self::RichText(text.heading()),
-            Self::LayoutJob(_) | Self::Galley(_) => self,
-        }
+        self.map_rich_text(|text| text.heading())
     }
 
     /// Prefer using [`RichText`] directly!
+    #[inline]
     pub fn monospace(self) -> Self {
-        match self {
-            Self::RichText(text) => Self::RichText(text.monospace()),
-            Self::LayoutJob(_) | Self::Galley(_) => self,
-        }
+        self.map_rich_text(|text| text.monospace())
     }
 
     /// Prefer using [`RichText`] directly!
+    #[inline]
     pub fn code(self) -> Self {
-        match self {
-            Self::RichText(text) => Self::RichText(text.code()),
-            Self::LayoutJob(_) | Self::Galley(_) => self,
-        }
+        self.map_rich_text(|text| text.code())
     }
 
     /// Prefer using [`RichText`] directly!
+    #[inline]
     pub fn strong(self) -> Self {
-        match self {
-            Self::RichText(text) => Self::RichText(text.strong()),
-            Self::LayoutJob(_) | Self::Galley(_) => self,
-        }
+        self.map_rich_text(|text| text.strong())
     }
 
     /// Prefer using [`RichText`] directly!
+    #[inline]
     pub fn weak(self) -> Self {
-        match self {
-            Self::RichText(text) => Self::RichText(text.weak()),
-            Self::LayoutJob(_) | Self::Galley(_) => self,
-        }
+        self.map_rich_text(|text| text.weak())
     }
 
     /// Prefer using [`RichText`] directly!
+    #[inline]
     pub fn underline(self) -> Self {
-        match self {
-            Self::RichText(text) => Self::RichText(text.underline()),
-            Self::LayoutJob(_) | Self::Galley(_) => self,
-        }
+        self.map_rich_text(|text| text.underline())
     }
 
     /// Prefer using [`RichText`] directly!
+    #[inline]
     pub fn strikethrough(self) -> Self {
-        match self {
-            Self::RichText(text) => Self::RichText(text.strikethrough()),
-            Self::LayoutJob(_) | Self::Galley(_) => self,
-        }
+        self.map_rich_text(|text| text.strikethrough())
     }
 
     /// Prefer using [`RichText`] directly!
+    #[inline]
     pub fn italics(self) -> Self {
-        match self {
-            Self::RichText(text) => Self::RichText(text.italics()),
-            Self::LayoutJob(_) | Self::Galley(_) => self,
-        }
+        self.map_rich_text(|text| text.italics())
     }
 
     /// Prefer using [`RichText`] directly!
+    #[inline]
     pub fn small(self) -> Self {
-        match self {
-            Self::RichText(text) => Self::RichText(text.small()),
-            Self::LayoutJob(_) | Self::Galley(_) => self,
-        }
+        self.map_rich_text(|text| text.small())
     }
 
     /// Prefer using [`RichText`] directly!
+    #[inline]
     pub fn small_raised(self) -> Self {
-        match self {
-            Self::RichText(text) => Self::RichText(text.small_raised()),
-            Self::LayoutJob(_) | Self::Galley(_) => self,
-        }
+        self.map_rich_text(|text| text.small_raised())
     }
 
     /// Prefer using [`RichText`] directly!
+    #[inline]
     pub fn raised(self) -> Self {
-        match self {
-            Self::RichText(text) => Self::RichText(text.raised()),
-            Self::LayoutJob(_) | Self::Galley(_) => self,
-        }
+        self.map_rich_text(|text| text.raised())
     }
 
     /// Prefer using [`RichText`] directly!
+    #[inline]
     pub fn background_color(self, background_color: impl Into<Color32>) -> Self {
-        match self {
-            Self::RichText(text) => Self::RichText(text.background_color(background_color)),
-            Self::LayoutJob(_) | Self::Galley(_) => self,
-        }
+        self.map_rich_text(|text| text.background_color(background_color))
     }
 
+    /// Returns a value rounded to [`emath::GUI_ROUNDING`].
     pub(crate) fn font_height(&self, fonts: &epaint::Fonts, style: &Style) -> f32 {
         match self {
+            Self::Text(_) => fonts.row_height(&FontSelection::Default.resolve(style)),
             Self::RichText(text) => text.font_height(fonts, style),
             Self::LayoutJob(job) => job.font_height(fonts),
             Self::Galley(galley) => {
-                if let Some(row) = galley.rows.first() {
-                    row.height()
+                if let Some(placed_row) = galley.rows.first() {
+                    placed_row.height().round_ui()
                 } else {
-                    galley.size().y
+                    galley.size().y.round_ui()
                 }
             }
         }
     }
 
-    pub fn into_text_job(
+    pub fn into_layout_job(
         self,
         style: &Style,
         fallback_font: FontSelection,
         default_valign: Align,
-    ) -> WidgetTextJob {
+    ) -> Arc<LayoutJob> {
         match self {
-            Self::RichText(text) => text.into_text_job(style, fallback_font, default_valign),
-            Self::LayoutJob(job) => WidgetTextJob {
-                job,
-                job_has_color: true,
-            },
-            Self::Galley(galley) => {
-                let job: LayoutJob = (*galley.job).clone();
-                WidgetTextJob {
-                    job,
-                    job_has_color: true,
-                }
-            }
+            Self::Text(text) => Arc::new(LayoutJob::simple_format(
+                text,
+                TextFormat {
+                    font_id: FontSelection::Default.resolve(style),
+                    color: crate::Color32::PLACEHOLDER,
+                    valign: default_valign,
+                    ..Default::default()
+                },
+            )),
+            Self::RichText(text) => Arc::new(Arc::unwrap_or_clone(text).into_layout_job(
+                style,
+                fallback_font,
+                default_valign,
+            )),
+            Self::LayoutJob(job) => job,
+            Self::Galley(galley) => galley.job.clone(),
         }
     }
 
     /// Layout with wrap mode based on the containing [`Ui`].
     ///
-    /// wrap: override for [`Ui::wrap_text`].
+    /// `wrap_mode`: override for [`Ui::wrap_mode`]
     pub fn into_galley(
         self,
         ui: &Ui,
-        wrap: Option<bool>,
+        wrap_mode: Option<TextWrapMode>,
         available_width: f32,
         fallback_font: impl Into<FontSelection>,
-    ) -> WidgetTextGalley {
-        let wrap = wrap.unwrap_or_else(|| ui.wrap_text());
-        let wrap_width = if wrap { available_width } else { f32::INFINITY };
+    ) -> Arc<Galley> {
+        let valign = ui.text_valign();
+        let style = ui.style();
 
+        let wrap_mode = wrap_mode.unwrap_or_else(|| ui.wrap_mode());
+        let text_wrapping = TextWrapping::from_wrap_mode_and_width(wrap_mode, available_width);
+
+        self.into_galley_impl(ui.ctx(), style, text_wrapping, fallback_font.into(), valign)
+    }
+
+    pub fn into_galley_impl(
+        self,
+        ctx: &crate::Context,
+        style: &Style,
+        text_wrapping: TextWrapping,
+        fallback_font: FontSelection,
+        default_valign: Align,
+    ) -> Arc<Galley> {
         match self {
+            Self::Text(text) => {
+                let mut layout_job = LayoutJob::simple_format(
+                    text,
+                    TextFormat {
+                        font_id: FontSelection::Default.resolve(style),
+                        color: crate::Color32::PLACEHOLDER,
+                        valign: default_valign,
+                        ..Default::default()
+                    },
+                );
+                layout_job.wrap = text_wrapping;
+                ctx.fonts(|f| f.layout_job(layout_job))
+            }
             Self::RichText(text) => {
-                let valign = ui.layout().vertical_align();
-                let mut text_job = text.into_text_job(ui.style(), fallback_font.into(), valign);
-                text_job.job.wrap.max_width = wrap_width;
-                WidgetTextGalley {
-                    galley: ui.fonts(|f| f.layout_job(text_job.job)),
-                    galley_has_color: text_job.job_has_color,
-                }
+                let mut layout_job = Arc::unwrap_or_clone(text).into_layout_job(
+                    style,
+                    fallback_font,
+                    default_valign,
+                );
+                layout_job.wrap = text_wrapping;
+                ctx.fonts(|f| f.layout_job(layout_job))
             }
-            Self::LayoutJob(mut job) => {
-                job.wrap.max_width = wrap_width;
-                WidgetTextGalley {
-                    galley: ui.fonts(|f| f.layout_job(job)),
-                    galley_has_color: true,
-                }
+            Self::LayoutJob(job) => {
+                let mut job = Arc::unwrap_or_clone(job);
+                job.wrap = text_wrapping;
+                ctx.fonts(|f| f.layout_job(job))
             }
-            Self::Galley(galley) => WidgetTextGalley {
-                galley,
-                galley_has_color: true,
-            },
+            Self::Galley(galley) => galley,
         }
     }
 }
@@ -679,34 +778,55 @@ impl WidgetText {
 impl From<&str> for WidgetText {
     #[inline]
     fn from(text: &str) -> Self {
-        Self::RichText(RichText::new(text))
+        Self::Text(text.to_owned())
     }
 }
 
 impl From<&String> for WidgetText {
     #[inline]
     fn from(text: &String) -> Self {
-        Self::RichText(RichText::new(text))
+        Self::Text(text.clone())
     }
 }
 
 impl From<String> for WidgetText {
     #[inline]
     fn from(text: String) -> Self {
-        Self::RichText(RichText::new(text))
+        Self::Text(text)
+    }
+}
+
+impl From<&Box<str>> for WidgetText {
+    #[inline]
+    fn from(text: &Box<str>) -> Self {
+        Self::Text(text.to_string())
+    }
+}
+
+impl From<Box<str>> for WidgetText {
+    #[inline]
+    fn from(text: Box<str>) -> Self {
+        Self::Text(text.into())
     }
 }
 
 impl From<Cow<'_, str>> for WidgetText {
     #[inline]
     fn from(text: Cow<'_, str>) -> Self {
-        Self::RichText(RichText::new(text))
+        Self::Text(text.into_owned())
     }
 }
 
 impl From<RichText> for WidgetText {
     #[inline]
     fn from(rich_text: RichText) -> Self {
+        Self::RichText(Arc::new(rich_text))
+    }
+}
+
+impl From<Arc<RichText>> for WidgetText {
+    #[inline]
+    fn from(rich_text: Arc<RichText>) -> Self {
         Self::RichText(rich_text)
     }
 }
@@ -714,6 +834,13 @@ impl From<RichText> for WidgetText {
 impl From<LayoutJob> for WidgetText {
     #[inline]
     fn from(layout_job: LayoutJob) -> Self {
+        Self::LayoutJob(Arc::new(layout_job))
+    }
+}
+
+impl From<Arc<LayoutJob>> for WidgetText {
+    #[inline]
+    fn from(layout_job: Arc<LayoutJob>) -> Self {
         Self::LayoutJob(layout_job)
     }
 }
@@ -725,85 +852,12 @@ impl From<Arc<Galley>> for WidgetText {
     }
 }
 
-// ----------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use crate::WidgetText;
 
-#[derive(Clone, PartialEq)]
-pub struct WidgetTextJob {
-    pub job: LayoutJob,
-    pub job_has_color: bool,
-}
-
-impl WidgetTextJob {
-    pub fn into_galley(self, fonts: &crate::text::Fonts) -> WidgetTextGalley {
-        let Self { job, job_has_color } = self;
-        let galley = fonts.layout_job(job);
-        WidgetTextGalley {
-            galley,
-            galley_has_color: job_has_color,
-        }
-    }
-}
-
-// ----------------------------------------------------------------------------
-
-/// Text that has been laid out and ready to be painted.
-#[derive(Clone, PartialEq)]
-pub struct WidgetTextGalley {
-    pub galley: Arc<Galley>,
-    pub galley_has_color: bool,
-}
-
-impl WidgetTextGalley {
-    /// Size of the laid out text.
-    #[inline]
-    pub fn size(&self) -> crate::Vec2 {
-        self.galley.size()
-    }
-
-    /// The full, non-elided text of the input job.
-    #[inline]
-    pub fn text(&self) -> &str {
-        self.galley.text()
-    }
-
-    #[inline]
-    pub fn galley(&self) -> &Arc<Galley> {
-        &self.galley
-    }
-
-    /// Use the colors in the original [`WidgetText`] if any,
-    /// else fall back to the one specified by the [`WidgetVisuals`].
-    pub fn paint_with_visuals(
-        self,
-        painter: &crate::Painter,
-        text_pos: Pos2,
-        visuals: &WidgetVisuals,
-    ) {
-        self.paint_with_fallback_color(painter, text_pos, visuals.text_color());
-    }
-
-    /// Use the colors in the original [`WidgetText`] if any,
-    /// else fall back to the given color.
-    pub fn paint_with_fallback_color(
-        self,
-        painter: &crate::Painter,
-        text_pos: Pos2,
-        text_color: Color32,
-    ) {
-        if self.galley_has_color {
-            painter.galley(text_pos, self.galley);
-        } else {
-            painter.galley_with_color(text_pos, self.galley, text_color);
-        }
-    }
-
-    /// Paint with this specific color.
-    pub fn paint_with_color_override(
-        self,
-        painter: &crate::Painter,
-        text_pos: Pos2,
-        text_color: Color32,
-    ) {
-        painter.galley_with_color(text_pos, self.galley, text_color);
+    #[test]
+    fn ensure_small_widget_text() {
+        assert_eq!(size_of::<WidgetText>(), size_of::<String>());
     }
 }

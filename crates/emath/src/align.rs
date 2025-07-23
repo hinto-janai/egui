@@ -1,6 +1,6 @@
 //! One- and two-dimensional alignment ([`Align::Center`], [`Align2::LEFT_TOP`] etc).
 
-use crate::*;
+use crate::{Pos2, Rangef, Rect, Vec2, pos2, vec2};
 
 /// left/center/right or top/center/bottom alignment for e.g. anchors and layouts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -47,6 +47,16 @@ impl Align {
             Self::Min => -1.0,
             Self::Center => 0.0,
             Self::Max => 1.0,
+        }
+    }
+
+    /// Returns the inverse alignment.
+    /// `Min` becomes `Max`, `Center` stays the same, `Max` becomes `Min`.
+    pub fn flip(self) -> Self {
+        match self {
+            Self::Min => Self::Max,
+            Self::Center => Self::Center,
+            Self::Max => Self::Min,
         }
     }
 
@@ -136,20 +146,20 @@ impl Align {
 // ----------------------------------------------------------------------------
 
 /// Two-dimension alignment, e.g. [`Align2::LEFT_TOP`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct Align2(pub [Align; 2]);
 
 impl Align2 {
-    pub const LEFT_BOTTOM: Align2 = Align2([Align::Min, Align::Max]);
-    pub const LEFT_CENTER: Align2 = Align2([Align::Min, Align::Center]);
-    pub const LEFT_TOP: Align2 = Align2([Align::Min, Align::Min]);
-    pub const CENTER_BOTTOM: Align2 = Align2([Align::Center, Align::Max]);
-    pub const CENTER_CENTER: Align2 = Align2([Align::Center, Align::Center]);
-    pub const CENTER_TOP: Align2 = Align2([Align::Center, Align::Min]);
-    pub const RIGHT_BOTTOM: Align2 = Align2([Align::Max, Align::Max]);
-    pub const RIGHT_CENTER: Align2 = Align2([Align::Max, Align::Center]);
-    pub const RIGHT_TOP: Align2 = Align2([Align::Max, Align::Min]);
+    pub const LEFT_BOTTOM: Self = Self([Align::Min, Align::Max]);
+    pub const LEFT_CENTER: Self = Self([Align::Min, Align::Center]);
+    pub const LEFT_TOP: Self = Self([Align::Min, Align::Min]);
+    pub const CENTER_BOTTOM: Self = Self([Align::Center, Align::Max]);
+    pub const CENTER_CENTER: Self = Self([Align::Center, Align::Center]);
+    pub const CENTER_TOP: Self = Self([Align::Center, Align::Min]);
+    pub const RIGHT_BOTTOM: Self = Self([Align::Max, Align::Max]);
+    pub const RIGHT_CENTER: Self = Self([Align::Max, Align::Center]);
+    pub const RIGHT_TOP: Self = Self([Align::Max, Align::Min]);
 }
 
 impl Align2 {
@@ -170,6 +180,24 @@ impl Align2 {
         vec2(self.x().to_sign(), self.y().to_sign())
     }
 
+    /// Flip on the x-axis
+    /// e.g. `TOP_LEFT` -> `TOP_RIGHT`
+    pub fn flip_x(self) -> Self {
+        Self([self.x().flip(), self.y()])
+    }
+
+    /// Flip on the y-axis
+    /// e.g. `TOP_LEFT` -> `BOTTOM_LEFT`
+    pub fn flip_y(self) -> Self {
+        Self([self.x(), self.y().flip()])
+    }
+
+    /// Flip on both axes
+    /// e.g. `TOP_LEFT` -> `BOTTOM_RIGHT`
+    pub fn flip(self) -> Self {
+        Self([self.x().flip(), self.y().flip()])
+    }
+
     /// Used e.g. to anchor a piece of text to a part of the rectangle.
     /// Give a position within the rect, specified by the aligns
     pub fn anchor_rect(self, rect: Rect) -> Rect {
@@ -184,6 +212,23 @@ impl Align2 {
             Align::Max => rect.top() - rect.height(),
         };
         Rect::from_min_size(pos2(x, y), rect.size())
+    }
+
+    /// Use this anchor to position something around `pos`,
+    /// e.g. [`Self::RIGHT_TOP`] means the right-top of the rect
+    /// will end up at `pos`.
+    pub fn anchor_size(self, pos: Pos2, size: Vec2) -> Rect {
+        let x = match self.x() {
+            Align::Min => pos.x,
+            Align::Center => pos.x - 0.5 * size.x,
+            Align::Max => pos.x - size.x,
+        };
+        let y = match self.y() {
+            Align::Min => pos.y,
+            Align::Center => pos.y - 0.5 * size.y,
+            Align::Max => pos.y - size.y,
+        };
+        Rect::from_min_size(pos2(x, y), size)
     }
 
     /// e.g. center a size within a given frame
@@ -252,4 +297,10 @@ impl std::ops::IndexMut<usize> for Align2 {
 /// of the `frame`.
 pub fn center_size_in_rect(size: Vec2, frame: Rect) -> Rect {
     Align2::CENTER_CENTER.align_size_within_rect(size, frame)
+}
+
+impl std::fmt::Debug for Align2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Align2({:?}, {:?})", self.x(), self.y())
+    }
 }

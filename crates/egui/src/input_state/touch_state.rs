@@ -1,9 +1,9 @@
 use std::{collections::BTreeMap, fmt::Debug};
 
 use crate::{
-    data::input::TouchDeviceId,
-    emath::{normalized_angle, Pos2, Vec2},
     Event, RawInput, TouchId, TouchPhase,
+    data::input::TouchDeviceId,
+    emath::{Pos2, Vec2, normalized_angle},
 };
 
 /// All you probably need to know about a multi-touch gesture.
@@ -14,6 +14,9 @@ pub struct MultiTouchInfo {
 
     /// Position of the pointer at the time the gesture started.
     pub start_pos: Pos2,
+
+    /// Center position of the current gesture (average of all touch points).
+    pub center_pos: Pos2,
 
     /// Number of touches (fingers) on the surface. Value is ≥ 2 since for a single touch no
     /// [`MultiTouchInfo`] is created.
@@ -64,6 +67,7 @@ pub struct MultiTouchInfo {
 
 /// The current state (for a specific touch device) of touch events and gestures.
 #[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub(crate) struct TouchState {
     /// Technical identifier of the touch device. This is used to identify relevant touch events
     /// for this [`TouchState`] instance.
@@ -71,7 +75,7 @@ pub(crate) struct TouchState {
 
     /// Active touches, if any.
     ///
-    /// TouchId is the unique identifier of the touch. It is valid as long as the finger/pen touches the surface. The
+    /// `TouchId` is the unique identifier of the touch. It is valid as long as the finger/pen touches the surface. The
     /// next touch will receive a new unique ID.
     ///
     /// Refer to [`ActiveTouch`].
@@ -83,6 +87,7 @@ pub(crate) struct TouchState {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 struct GestureState {
     start_time: f64,
     start_pointer_pos: Pos2,
@@ -93,6 +98,7 @@ struct GestureState {
 
 /// Gesture data that can change over time
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 struct DynGestureState {
     /// used for proportional zooming
     avg_distance: f32,
@@ -110,6 +116,7 @@ struct DynGestureState {
 /// Describes an individual touch (finger or digitizer) on the touch surface. Instances exist as
 /// long as the finger/pen touches the surface.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 struct ActiveTouch {
     /// Current position of this touch, in device coordinates (not necessarily screen position)
     pos: Pos2,
@@ -130,7 +137,7 @@ impl TouchState {
         }
     }
 
-    pub fn begin_frame(&mut self, time: f64, new: &RawInput, pointer_pos: Option<Pos2>) {
+    pub fn begin_pass(&mut self, time: f64, new: &RawInput, pointer_pos: Option<Pos2>) {
         let mut added_or_removed_touches = false;
         for event in &new.events {
             match *event {
@@ -159,6 +166,7 @@ impl TouchState {
                 _ => (),
             }
         }
+
         // This needs to be called each frame, even if there are no new touch events.
         // Otherwise, we would send the same old delta information multiple times:
         self.update_gesture(time, pointer_pos);
@@ -166,14 +174,15 @@ impl TouchState {
         if added_or_removed_touches {
             // Adding or removing fingers makes the average values "jump". We better forget
             // about the previous values, and don't create delta information for this frame:
-            if let Some(ref mut state) = &mut self.gesture_state {
+            if let Some(state) = &mut self.gesture_state {
                 state.previous = None;
             }
         }
     }
 
-    pub fn is_active(&self) -> bool {
-        self.gesture_state.is_some()
+    /// Are there currently any fingers touching the surface?
+    pub fn any_touches(&self) -> bool {
+        !self.active_touches.is_empty()
     }
 
     pub fn info(&self) -> Option<MultiTouchInfo> {
@@ -185,7 +194,7 @@ impl TouchState {
 
             let zoom_delta = state.current.avg_distance / state_previous.avg_distance;
 
-            let zoom_delta2 = match state.pinch_type {
+            let zoom_delta_2d = match state.pinch_type {
                 PinchType::Horizontal => Vec2::new(
                     state.current.avg_abs_distance2.x / state_previous.avg_abs_distance2.x,
                     1.0,
@@ -197,22 +206,25 @@ impl TouchState {
                 PinchType::Proportional => Vec2::splat(zoom_delta),
             };
 
+            let center_pos = state.current.avg_pos;
+
             MultiTouchInfo {
                 start_time: state.start_time,
                 start_pos: state.start_pointer_pos,
                 num_touches: self.active_touches.len(),
                 zoom_delta,
-                zoom_delta_2d: zoom_delta2,
+                zoom_delta_2d,
                 rotation_delta: normalized_angle(state.current.heading - state_previous.heading),
                 translation_delta: state.current.avg_pos - state_previous.avg_pos,
                 force: state.current.avg_force,
+                center_pos,
             }
         })
     }
 
     fn update_gesture(&mut self, time: f64, pointer_pos: Option<Pos2>) {
         if let Some(dyn_state) = self.calc_dynamic_state() {
-            if let Some(ref mut state) = &mut self.gesture_state {
+            if let Some(state) = &mut self.gesture_state {
                 // updating an ongoing gesture
                 state.previous = Some(state.current);
                 state.current = dyn_state;
@@ -302,6 +314,7 @@ impl Debug for TouchState {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 enum PinchType {
     Horizontal,
     Vertical,
