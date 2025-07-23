@@ -139,7 +139,8 @@ mod rw_lock_impl {
     /// the feature `deadlock_detection` is turned enabled, in which case
     /// extra checks are added to detect deadlocks.
     #[derive(Default)]
-    pub struct RwLock<T: ?Sized>(parking_lot::RwLock<T>);
+    pub struct RwLock<T: ?Sized>(std::sync::RwLock<T>);
+    // pub struct RwLock<T: ?Sized>(parking_lot::RwLock<T>);
 
     impl<T> RwLock<T> {
         #[inline(always)]
